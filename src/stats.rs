@@ -99,3 +99,39 @@ pub struct WorkerStats {
     pub other_error_response: u64,
     pub timeouts: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::work_unit::{ExecutionResult, HttpRequestOutcome};
+
+    fn result(outcome: HttpRequestOutcome, duration_nanos: u64) -> ExecutionResult {
+        ExecutionResult {
+            outcome,
+            duration: Duration::from_nanos(duration_nanos),
+        }
+    }
+
+    #[test]
+    fn statistics_add_success() {
+        let mut s = Statistics::new(10);
+        s.add(&result(HttpRequestOutcome::SuccessResponse, 100));
+        s.add(&result(HttpRequestOutcome::SuccessResponse, 200));
+        assert_eq!(s.successful_response, 2);
+        assert_eq!(s.success_latencies.len(), 2);
+        assert_eq!(s.non_success_latencies.len(), 0);
+    }
+
+    #[test]
+    fn statistics_add_mixed_outcomes() {
+        let mut s = Statistics::new(10);
+        s.add(&result(HttpRequestOutcome::SuccessResponse, 50));
+        s.add(&result(HttpRequestOutcome::ClientErrorResponse, 100));
+        s.add(&result(HttpRequestOutcome::Timeout, 200));
+        assert_eq!(s.successful_response, 1);
+        assert_eq!(s.client_error_response, 1);
+        assert_eq!(s.timeouts, 1);
+        assert_eq!(s.success_latencies.len(), 1);
+        assert_eq!(s.non_success_latencies.len(), 2);
+    }
+}

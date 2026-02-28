@@ -169,6 +169,10 @@ struct Cli {
 /// Parse command-line arguments and return a simple struct.
 pub async fn parse() -> Result<Args> {
     let cli = Cli::parse();
+    args_from_cli(cli).await
+}
+
+async fn args_from_cli(cli: Cli) -> Result<Args> {
     let header = parse_headers(&cli.header)?;
     let url = url::Url::parse(&cli.url).map_err(|source| AppError::InvalidUrl {
         raw: cli.url.clone(),
@@ -338,7 +342,7 @@ async fn resolve_root_certificates(cli: &Cli) -> Result<Option<Vec<Certificate>>
 }
 
 /// Parses a "Name: Value" header line. Splits on the first colon; name and value are trimmed.
-fn parse_header_line(s: &str) -> Result<(http::HeaderName, http::HeaderValue)> {
+pub(crate) fn parse_header_line(s: &str) -> Result<(http::HeaderName, http::HeaderValue)> {
     let s = s.trim();
     let Some((name, value)) = s.split_once(':') else {
         return Err(AppError::InvalidHeaderFormat { raw: s.to_owned() });
@@ -355,4 +359,289 @@ fn parse_header_line(s: &str) -> Result<(http::HeaderName, http::HeaderValue)> {
             source,
         })?;
     Ok((name, value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(args: &[&str]) -> Vec<std::ffi::OsString> {
+        std::iter::once(std::ffi::OsString::from("loadtest"))
+            .chain(args.iter().map(|s| std::ffi::OsString::from(*s)))
+            .collect::<Vec<_>>()
+    }
+
+    /// Parse from an explicit list of arguments. First element should be the program name.
+    async fn parse_from<I, T>(args: I) -> Result<Args>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let cli = Cli::try_parse_from(args).map_err(AppError::from)?;
+        args_from_cli(cli).await
+    }
+
+    /// Table-driven tests: parse_from(argv) succeeds; use `|args| { ... }` so the binding is in scope.
+    macro_rules! parse_from_ok_tests {
+        ($($name:ident: $argv:expr => |$args:ident| $body:block),* $(,)?) => {
+            $(
+                #[tokio::test]
+                async fn $name() {
+                    let $args = parse_from(argv($argv)).await.unwrap();
+                    $body
+                }
+            )*
+        };
+    }
+
+    /// Table-driven tests: parse_from(argv) fails and the error matches the given pattern.
+    macro_rules! parse_from_err_tests {
+        ($($name:ident: $argv:expr => $err_pat:pat),* $(,)?) => {
+            $(
+                #[tokio::test]
+                async fn $name() {
+                    let err = parse_from(argv($argv)).await.unwrap_err();
+                    assert!(matches!(err, $err_pat));
+                }
+            )*
+        };
+    }
+
+    parse_from_ok_tests! {
+        parse_minimal_http1: &["https://example.com/", "--http1.1"] => |args| {
+            assert_eq!(args.url.as_str(), "https://example.com/");
+            assert!(matches!(args.protocol, HttpProtocol::Http1_1));
+            assert_eq!(args.request, http::Method::GET);
+            assert!(!args.insecure);
+            assert!(!args.location);
+            assert_eq!(args.requests_per_second, rust_decimal::Decimal::from(1));
+            assert_eq!(args.duration, Duration::from_secs(10));
+            assert!(args.max_time.is_none());
+            assert!(args.connect_timeout.is_none());
+            assert!(args.payload.is_none());
+            assert!(args.identity.is_none());
+            assert!(args.root_certificates.is_none());
+            assert!(!args.dry_run);
+            assert!(args.output.as_os_str().to_str().unwrap().starts_with("loadtest-report-"));
+            assert!(args.output.as_os_str().to_str().unwrap().ends_with(".pb"));
+        },
+        parse_http2_prior_knowledge: &["https://example.com/", "--http2-prior-knowledge"] => |args| {
+            assert!(matches!(args.protocol, HttpProtocol::Http2));
+        },
+        parse_duration_and_rps: &[
+            "https://example.com/",
+            "--http1.1",
+            "--duration",
+            "5",
+            "--requests-per-second",
+            "10",
+        ] => |args| {
+            assert_eq!(args.duration, Duration::from_secs(5));
+            assert_eq!(args.requests_per_second, rust_decimal::Decimal::from(10));
+        },
+        parse_headers: &[
+            "https://example.com/",
+            "--http1.1",
+            "-H",
+            "X-Foo: bar",
+            "-H",
+            "Accept: application/json",
+        ] => |args| {
+            assert_eq!(args.header.get("x-foo").and_then(|v| v.to_str().ok()), Some("bar"));
+            assert_eq!(
+                args.header.get("accept").and_then(|v| v.to_str().ok()),
+                Some("application/json")
+            );
+        },
+        parse_request_method: &["https://example.com/", "--http1.1", "-X", "POST"] => |args| {
+            assert_eq!(args.request, http::Method::POST);
+        },
+        parse_insecure_and_location: &["https://example.com/", "--http1.1", "-k", "-L"] => |args| {
+            assert!(args.insecure);
+            assert!(args.location);
+        },
+        parse_output_path: &[
+            "https://example.com/",
+            "--http1.1",
+            "-o",
+            "/tmp/report.pb",
+        ] => |args| {
+            assert_eq!(args.output.as_path(), std::path::Path::new("/tmp/report.pb"));
+        },
+        parse_dry_run: &["https://example.com/", "--http1.1", "--dry-run"] => |args| {
+            assert!(args.dry_run);
+        },
+        parse_data_payload: &[
+            "https://example.com/",
+            "--http1.1",
+            "-d",
+            "hello world",
+        ] => |args| {
+            let payload = args.payload.as_ref().unwrap();
+            match payload {
+                Payload::Data(b) => assert_eq!(b.as_ref(), b"hello world"),
+                Payload::File(_) => panic!("expected Data payload"),
+            }
+            assert_eq!(args.request, http::Method::POST);
+        },
+        parse_max_time_and_connect_timeout: &[
+            "https://example.com/",
+            "--http1.1",
+            "-m",
+            "30",
+            "--connect-timeout",
+            "2.5",
+        ] => |args| {
+            assert_eq!(args.max_time, Some(Duration::from_secs(30)));
+            assert_eq!(args.connect_timeout, Some(Duration::from_secs_f64(2.5)));
+        },
+        parse_cacert_dry_run: &[
+            "https://example.com/",
+            "--http1.1",
+            "--dry-run",
+            "--cacert",
+            "/etc/ssl/cacert.pem",
+        ] => |args| {
+            assert!(args.dry_run);
+            assert_eq!(
+                args.cacert.as_deref(),
+                Some(std::path::Path::new("/etc/ssl/cacert.pem"))
+            );
+        },
+        parse_cert_and_key_paths_dry_run: &[
+            "https://example.com/",
+            "--http1.1",
+            "--dry-run",
+            "-E",
+            "/path/to/cert.pem",
+            "--key",
+            "/path/to/key.pem",
+        ] => |args| {
+            assert!(args.dry_run);
+            assert_eq!(
+                args.cert.as_deref(),
+                Some(std::path::Path::new("/path/to/cert.pem"))
+            );
+            assert_eq!(
+                args.key.as_deref(),
+                Some(std::path::Path::new("/path/to/key.pem"))
+            );
+            assert!(args.identity.is_none());
+        },
+        parse_upload_file_path_dry_run: &[
+            "https://example.com/",
+            "--http1.1",
+            "--dry-run",
+            "-T",
+            "/tmp/upload.bin",
+        ] => |args| {
+            assert!(args.dry_run);
+            assert_eq!(
+                args.upload_file_path.as_deref(),
+                Some(std::path::Path::new("/tmp/upload.bin"))
+            );
+        },
+    }
+
+    parse_from_err_tests! {
+        parse_invalid_url_fails: &["not-a-url", "--http1.1"] => AppError::InvalidUrl { .. },
+        parse_missing_protocol_fails: &["https://example.com/"] => AppError::SpecifyProtocol,
+        parse_mutually_exclusive_protocols_fails: &[
+            "https://example.com/",
+            "--http1.1",
+            "--http2-prior-knowledge",
+        ] => AppError::MutuallyExclusiveProtocols,
+        parse_mutually_exclusive_upload_file_and_data_fails: &[
+            "https://example.com/",
+            "--http1.1",
+            "-d",
+            "data",
+            "-T",
+            "/tmp/file",
+        ] => AppError::MutuallyExclusiveUploadFileAndData,
+        parse_cert_without_key_fails: &[
+            "https://example.com/",
+            "--http1.1",
+            "-E",
+            "/cert.pem",
+        ] => AppError::KeyMustBeProvidedWithCert,
+        parse_key_without_cert_fails: &[
+            "https://example.com/",
+            "--http1.1",
+            "--key",
+            "/key.pem",
+        ] => AppError::CertMustBeProvidedWithKey,
+    }
+
+    /// Fails to compile if a new field is added to `Args` without updating this test (and the coverage matrix).
+    #[tokio::test]
+    async fn args_exhaustive_destructure() {
+        let args = parse_from(argv(&["https://example.com/", "--http1.1"]))
+            .await
+            .unwrap();
+        let Args {
+            url,
+            header,
+            insecure,
+            request,
+            cacert,
+            cert,
+            key,
+            location,
+            requests_per_second,
+            duration,
+            max_time,
+            connect_timeout,
+            output,
+            protocol,
+            payload,
+            identity,
+            root_certificates,
+            dry_run,
+            upload_file_path,
+        } = &args;
+        assert!(!url.as_str().is_empty());
+        assert!(header.is_empty());
+        assert!(!*insecure);
+        assert_eq!(request.as_str(), "GET");
+        assert!(cacert.is_none());
+        assert!(cert.is_none());
+        assert!(key.is_none());
+        assert!(!*location);
+        assert_eq!(requests_per_second, &rust_decimal::Decimal::from(1));
+        assert_eq!(duration, &Duration::from_secs(10));
+        assert!(max_time.is_none());
+        assert!(connect_timeout.is_none());
+        assert!(!output.as_os_str().is_empty());
+        assert!(matches!(protocol, HttpProtocol::Http1_1));
+        assert!(payload.is_none());
+        assert!(identity.is_none());
+        assert!(root_certificates.is_none());
+        assert!(!*dry_run);
+        assert!(upload_file_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn parse_upload_file_payload() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("loadtest-upload-file-payload-test.bin");
+        let content = b"file body content";
+        tokio::fs::write(&path, content).await.unwrap();
+        let path_str = path.to_string_lossy();
+        let args = parse_from(argv(&[
+            "https://example.com/",
+            "--http1.1",
+            "-T",
+            path_str.as_ref(),
+        ]))
+        .await
+        .unwrap();
+        let payload = args.payload.as_ref().unwrap();
+        match payload {
+            Payload::File(b) => assert_eq!(b.as_ref(), content),
+            Payload::Data(_) => panic!("expected File payload"),
+        }
+        assert_eq!(args.request, http::Method::PUT);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
 }

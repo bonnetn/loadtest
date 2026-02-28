@@ -268,7 +268,8 @@ fn create_interval(
     interval
 }
 
-fn rps_to_period(rps: Decimal) -> Duration {
+/// Converts requests-per-second to period between requests (nanos).
+pub(crate) fn rps_to_period(rps: Decimal) -> Duration {
     let period = Decimal::ONE
         .checked_div(rps)
         .expect("Period must be greater than 0");
@@ -280,4 +281,28 @@ fn rps_to_period(rps: Decimal) -> Duration {
         .to_u64()
         .expect("Period must be less than u64::MAX");
     Duration::from_nanos(period_ns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn rps_to_period_one_per_second() {
+        let period = rps_to_period(Decimal::ONE);
+        assert_eq!(period.as_nanos(), 1_000_000_000);
+    }
+
+    #[test]
+    fn rps_to_period_ten_per_second() {
+        let period = rps_to_period(Decimal::from(10));
+        assert_eq!(period.as_nanos(), 100_000_000);
+    }
+
+    #[test]
+    fn rps_to_period_half_per_second() {
+        let period = rps_to_period(Decimal::new(5, 1)); // 0.5
+        assert_eq!(period.as_nanos(), 2_000_000_000);
+    }
 }

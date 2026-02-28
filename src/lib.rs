@@ -1,4 +1,6 @@
-//! Loadtest binary: parses CLI, prints config (or runs load test via the library).
+//! Loadtest library: CLI parsing, worker orchestration, report generation.
+//!
+//! The binary (`main.rs`) parses argv and calls [`run`] or prints [`format_args`] for dry-run.
 
 #![warn(
     clippy::pedantic,
@@ -103,28 +105,41 @@
     clippy::wildcard_enum_match_arm
 )]
 
-use std::io::Write as _;
+mod cdf;
+mod cli;
+mod display;
+mod error;
+mod proto;
+mod report;
+mod stats;
+mod work_unit;
+mod worker_manager;
 
-use console::{Term, style};
+#[cfg(test)]
+mod report_fixtures;
 
-use loadtest::{format_args, parse, run};
+pub use cdf::calculate_cdf;
+pub use cli::{Args, HttpProtocol, Payload, parse};
+pub use display::format_args;
+pub use error::{AppError, Result};
+pub use report::build_run_report;
+pub use worker_manager::{RunResult, spawn_workers};
 
-fn main() -> miette::Result<()> {
-    run_async()?;
-    Ok(())
-}
-
-#[tokio::main]
-async fn run_async() -> loadtest::Result<()> {
-    let args = parse().await?;
-    let mut term = Term::stdout();
-    let formatted = format_args(&args);
-    writeln!(term, "{}", style("Arguments").bold())?;
-    for line in formatted.lines().skip(1) {
-        writeln!(term, "{line}")?;
-    }
+/// Entry point: run load test (spawn workers, write report). Call after parsing CLI.
+/// If `args.dry_run` is true, the caller should only print [`format_args`] and return.
+pub async fn run(args: Args) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
-    run(args).await
+    let result = worker_manager::spawn_workers(&args).await?;
+    let args_clone = args.clone();
+    let (bytes, path) = tokio::task::spawn_blocking(move || {
+        let bytes = report::build_run_report(&args_clone, &result)?;
+        Ok::<_, crate::AppError>((bytes, args_clone.output))
+    })
+    .await
+    .map_err(AppError::from)??;
+    tokio::fs::write(&path, &bytes).await?;
+    println!("Wrote run report to {}", path.display());
+    Ok(())
 }

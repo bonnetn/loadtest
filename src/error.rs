@@ -107,4 +107,9 @@ pub enum AppError {
     #[error("Failed to parse CA certificate PEM file")]
     #[diagnostic(code(loadtest::failed_to_parse_cacert_pem_file))]
     FailedToParseCacertPemFile { source: reqwest::Error },
+
+    /// Invalid or missing CLI arguments.
+    #[error(transparent)]
+    #[diagnostic(code(loadtest::clap))]
+    Clap(#[from] clap::Error),
 }

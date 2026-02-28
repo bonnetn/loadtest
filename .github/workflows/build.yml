@@ -39,6 +39,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run cargo clippy
         run: cargo clippy -- -D warnings
+      - name: Install cargo deny
+        run: cargo install cargo-deny
       - name: Run cargo clippy
         run: cargo deny check
       

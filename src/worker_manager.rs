@@ -36,7 +36,9 @@ pub async fn spawn_workers(args: &Args) -> Result<RunResult> {
     let concurrency = tokio::runtime::Handle::current().metrics().num_workers();
 
     let start_barrier = Arc::new(Barrier::new(
-        concurrency.checked_add(1).expect("concurrency overflow for barrier"),
+        concurrency
+            .checked_add(1)
+            .expect("concurrency overflow for barrier"),
     ));
     let cancelation_token = CancellationToken::new();
 

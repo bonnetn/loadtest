@@ -340,8 +340,7 @@ fn args_to_config(args: &cli::Args) -> LoadTestConfig {
         url: args.url.to_string(),
         method: args.request.as_str().to_owned(),
         requests_per_second: args.requests_per_second.to_u32().unwrap_or(0),
-        duration_secs: i64::try_from(args.duration.as_secs())
-            .expect("duration seconds fit in i64"),
+        duration_secs: i64::try_from(args.duration.as_secs()).expect("duration seconds fit in i64"),
         headers,
     }
 }
@@ -443,7 +442,8 @@ fn calculate_cdf(
 ) -> Vec<(f64, Duration)> {
     durations.sort();
 
-    let resolution_f64 = f64::from(u32::try_from(resolution).expect("resolution fits in u32 for CDF"));
+    let resolution_f64 =
+        f64::from(u32::try_from(resolution).expect("resolution fits in u32 for CDF"));
     let k = -LN_10 / resolution_f64;
     let ratio = k.exp();
     let mut r = start;
@@ -458,8 +458,11 @@ fn calculate_cdf(
     for _ in 0..=n {
         let p = 1.0_f64 - r;
         let p_scaled = (p * 1e9).round().clamp(0.0, 1e9);
-        let p_scaled = format!("{p_scaled:.0}").parse::<u64>().expect("p_scaled in 0..=1e9 parses as u64");
-        let idx = u64::try_from(len).expect("len fits in u64")
+        let p_scaled = format!("{p_scaled:.0}")
+            .parse::<u64>()
+            .expect("p_scaled in 0..=1e9 parses as u64");
+        let idx = u64::try_from(len)
+            .expect("len fits in u64")
             .checked_mul(p_scaled)
             .and_then(|v| v.checked_div(1_000_000_000))
             .expect("CDF index overflow");

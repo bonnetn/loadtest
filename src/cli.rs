@@ -243,19 +243,20 @@ async fn resolve_payload_and_path(cli: &Cli) -> Result<(Option<Payload>, Option<
     } else {
         let payload = match (cli.upload_file.as_ref(), cli.data.as_ref()) {
             (Some(path), None) => {
-                let mut file = File::open(path)
-                    .await
-                    .map_err(|source| AppError::FailedToOpenFile {
-                        path: path.clone(),
-                        source,
-                    })?;
+                let mut file =
+                    File::open(path)
+                        .await
+                        .map_err(|source| AppError::FailedToOpenFile {
+                            path: path.clone(),
+                            source,
+                        })?;
                 let mut content = Vec::new();
-                file.read_to_end(&mut content)
-                    .await
-                    .map_err(|source| AppError::FailedToReadFile {
+                file.read_to_end(&mut content).await.map_err(|source| {
+                    AppError::FailedToReadFile {
                         path: path.clone(),
                         source,
-                    })?;
+                    }
+                })?;
                 Some(Payload::File(Bytes::from(content)))
             }
             (None, Some(data)) => Some(Payload::Data(Bytes::from(data.clone()))),

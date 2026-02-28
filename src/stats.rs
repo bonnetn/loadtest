@@ -70,7 +70,10 @@ impl Statistics {
                     .expect("other_error_response counter overflow");
             }
             HttpRequestOutcome::Timeout => {
-                self.timeouts = self.timeouts.checked_add(1).expect("timeouts counter overflow");
+                self.timeouts = self
+                    .timeouts
+                    .checked_add(1)
+                    .expect("timeouts counter overflow");
             }
         }
         if is_success {

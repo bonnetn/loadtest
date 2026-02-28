@@ -14,6 +14,7 @@ runs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ inputs.target }}
+        components: clippy,rustfmt,deny
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: rust-cache

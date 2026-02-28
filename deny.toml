@@ -1,0 +1,18 @@
+[graph]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl", 
+    "x86_64-pc-windows-gnu",
+    "x86_64-apple-darwin", 
+    "aarch64-apple-darwin",
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Unicode-3.0",
+    "MIT",
+    "ISC",
+    "BSD-3-Clause",
+    "OpenSSL",
+]

@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package loadtest;
+
+/// A single HTTP header (name + value).
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+/// Configuration for a load test run.
+message LoadTestConfig {
+  string url = 1;
+  string method = 2;
+  uint32 requests_per_second = 3;
+  int64 duration_secs = 4;
+  repeated Header headers = 5;
+}
+
+/// Result of a single request (for aggregating stats or exporting).
+message RequestResult {
+  int64 latency_nanos = 1;
+  uint32 status_code = 2;
+  bool success = 3;
+  string error_message = 4;
+}
+
+/// A single worker snapshot (periodic sample during the run).
+message WorkerStats {
+  int64 timestamp_unix_nanos = 1;
+  uint32 worker_id = 2;
+  uint64 elapsed_nanos = 3;
+  uint64 request_sent = 4;
+  uint64 in_flight = 5;
+  uint64 informational_response = 6;
+  uint64 successful_response = 7;
+  uint64 redirection_message = 8;
+  uint64 client_error_response = 9;
+  uint64 server_error_response = 10;
+  uint64 other_error_response = 11;
+  uint64 timeouts = 12;
+}
+
+/// A single CDF point: percentile (0..1) and latency at that percentile.
+message CdfPoint {
+  double percentile = 1;
+  int64 latency_nanos = 2;
+}
+
+/// Full run report: arguments, run timestamp, worker snapshots, and CDFs.
+message LoadTestRunReport {
+  int64 run_timestamp_unix_nanos = 1;
+  LoadTestConfig config = 2;
+  repeated WorkerStats worker_stats = 3;
+  repeated CdfPoint cdf = 4;                    // CDF over all latencies.
+  repeated CdfPoint cdf_success = 5;             // CDF over success (2xx) latencies only.
+  repeated CdfPoint cdf_non_success = 6;         // CDF over non-success latencies only.
+}

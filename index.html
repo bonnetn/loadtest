@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Loadtest report decoder</title>
+  <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: right; }
+    th { background: #f2f2f2; }
+    td:first-child, th:first-child { text-align: left; }
+    #plot, #plotWorkers, #plotWorkersSent { width: 100%; height: 500px; margin-top: 20px; }
+    h2 { margin-top: 24px; }
+    .section { margin-bottom: 24px; }
+    #dropzone { border: 2px dashed #999; padding: 20px; text-align: center; margin-bottom: 20px; background: #f8f8f8; }
+    #dropzone.dragover { background: #d0f0d0; border-color: #3a3; }
+    #fileInput { display: none; }
+    button { margin-top: 10px; padding: 10px 15px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Loadtest report</h1>
+  <div id="dropzone">
+    Drag & drop a <b>.pb</b> report file here, or <button id="pickBtn" type="button">Select file</button>
+    <input type="file" id="fileInput" accept=".pb">
+  </div>
+  <div id="report"></div>
+  <div id="plot"></div>
+  <h2>Workers: in-flight over time</h2>
+  <div id="plotWorkers"></div>
+  <h2>Workers: request rate over time</h2>
+  <div id="plotWorkersSent"></div>
+
+  <script>
+    (function () {
+      const protoDef = `
+        syntax = "proto3";
+        package loadtest;
+        message Header { string name = 1; string value = 2; }
+        message LoadTestConfig {
+          string url = 1; string method = 2; uint32 requests_per_second = 3;
+          int64 duration_secs = 4; repeated Header headers = 5;
+        }
+        message WorkerStats {
+          int64 timestamp_unix_nanos = 1; uint32 worker_id = 2; uint64 elapsed_nanos = 3;
+          uint64 request_sent = 4; uint64 in_flight = 5; uint64 informational_response = 6;
+          uint64 successful_response = 7; uint64 redirection_message = 8;
+          uint64 client_error_response = 9; uint64 server_error_response = 10;
+          uint64 other_error_response = 11; uint64 timeouts = 12;
+        }
+        message CdfPoint { double percentile = 1; int64 latency_nanos = 2; }
+        message LoadTestRunReport {
+          int64 run_timestamp_unix_nanos = 1; LoadTestConfig config = 2;
+          repeated WorkerStats worker_stats = 3;
+          repeated CdfPoint cdf = 4; repeated CdfPoint cdf_success = 5;
+          repeated CdfPoint cdf_non_success = 6;
+        }
+      `;
+
+      const root = protobuf.parse(protoDef).root;
+      const LoadTestRunReport = root.lookupType("loadtest.LoadTestRunReport");
+
+      function chooseUnit(maxValue) {
+        if (maxValue < 1e3) return { factor: 1, unit: 'ns' };
+        if (maxValue < 1e6) return { factor: 1e-3, unit: 'µs' };
+        if (maxValue < 1e9) return { factor: 1e-6, unit: 'ms' };
+        return { factor: 1e-9, unit: 's' };
+      }
+
+      function formatValue(value, factor) {
+        if (value == null) return '—';
+        return (Number(value) * factor).toFixed(3);
+      }
+
+      // Build CDF traces: x = tail probability (1 - percentile), y = latency_nanos
+      function cdfToTrace(points, name) {
+        if (!points || !points.length) return null;
+        const x = points.map(p => 1 - (Number(p.percentile ?? 0)));
+        const y = points.map(p => Number(p.latencyNanos ?? p.latency_nanos ?? 0));
+        return { x, y, name };
+      }
+
+      function renderReport(obj) {
+      const workerStats = obj.workerStats || obj.worker_stats || [];
+      const cdfAll = obj.cdf || [];
+      const cdfSuccess = obj.cdfSuccess || obj.cdf_success || [];
+      const cdfNonSuccess = obj.cdfNonSuccess || obj.cdf_non_success || [];
+
+      const traceAll = cdfToTrace(cdfAll, 'All');
+      const traceSuccess = cdfToTrace(cdfSuccess, 'Success (2xx)');
+      const traceNonSuccess = cdfToTrace(cdfNonSuccess, 'Non-success');
+
+      const allLatencies = [].concat(
+        (traceAll && traceAll.y) || [],
+        (traceSuccess && traceSuccess.y) || [],
+        (traceNonSuccess && traceNonSuccess.y) || []
+      );
+      const maxLat = allLatencies.length ? Math.max(...allLatencies) : 1e6;
+      const { factor, unit } = chooseUnit(maxLat);
+
+      const traces = [traceAll, traceSuccess, traceNonSuccess].filter(Boolean).map(t => ({
+        x: t.x,
+        y: t.y.map(v => v * factor),
+        text: t.x.map((tailP, i) => {
+          const pct = ((1 - tailP) * 100).toFixed(3);
+          const lat = (t.y[i] * factor).toFixed(3);
+          return t.name + '<br>Percentile: ' + pct + '%<br>Latency: ' + lat + ' ' + unit;
+        }),
+        hoverinfo: 'text',
+        name: t.name,
+        mode: 'lines'
+      }));
+
+      Plotly.newPlot('plot', traces, {
+        title: 'Tail Latency CDF (' + unit + ')',
+        xaxis: {
+          title: 'Tail percentile',
+          type: 'log',
+          range: [0, -4],
+          tickvals: [1e-6, 1e-4, 1e-3, 1e-2, 1e-1, 0.5, 1],
+          ticktext: ['~100%', '99.99%', '99.9%', '99%', '90%', '50%', '0%']
+        },
+        yaxis: { title: 'Latency (' + unit + ')' }
+      });
+
+      // Workers: in-flight and requests sent over time (one line per worker)
+      if (workerStats.length > 0) {
+        const byWorker = {};
+        workerStats.forEach(w => {
+          const id = w.workerId ?? w.worker_id ?? 0;
+          if (byWorker[id] == null) byWorker[id] = [];
+          byWorker[id].push({
+            t: Number(w.timestampUnixNanos ?? w.timestamp_unix_nanos ?? 0),
+            inFlight: Number(w.inFlight ?? w.in_flight ?? 0),
+            requestSent: Number(w.requestSent ?? w.request_sent ?? 0)
+          });
+        });
+        const allTs = workerStats.map(w => Number(w.timestampUnixNanos ?? w.timestamp_unix_nanos ?? 0)).filter(t => t >= 0);
+        const t0 = allTs.length ? Math.min(...allTs) : 0;
+        const workerIds = Object.keys(byWorker).sort((a, b) => Number(a) - Number(b));
+        const inFlightTraces = workerIds.map(workerId => {
+          const points = byWorker[workerId].sort((a, b) => a.t - b.t);
+          return {
+            x: points.map(p => (p.t - t0) / 1e9),
+            y: points.map(p => p.inFlight),
+            name: 'Worker ' + workerId,
+            mode: 'lines',
+            type: 'scatter'
+          };
+        });
+        Plotly.newPlot('plotWorkers', inFlightTraces, {
+          title: 'In-flight per worker over time',
+          xaxis: { title: 'Time (seconds from run start)' },
+          yaxis: { title: 'In-flight requests' }
+        });
+        const requestSentTraces = workerIds.map(workerId => {
+          const points = byWorker[workerId].sort((a, b) => a.t - b.t);
+          const tSec = points.map(p => (p.t - t0) / 1e9);
+          const r = points.map(p => p.requestSent);
+          const xRate = [];
+          const yRate = [];
+          for (let i = 1; i < points.length; i++) {
+            const dt = tSec[i] - tSec[i - 1];
+            if (dt > 0) {
+              xRate.push(tSec[i]);
+              yRate.push((r[i] - r[i - 1]) / dt);
+            }
+          }
+          return {
+            x: xRate,
+            y: yRate,
+            name: 'Worker ' + workerId,
+            mode: 'lines',
+            type: 'scatter'
+          };
+        });
+        Plotly.newPlot('plotWorkersSent', requestSentTraces, {
+          title: 'Request rate per worker over time',
+          xaxis: { title: 'Time (seconds from run start)' },
+          yaxis: { title: 'Requests per second' }
+        });
+      }
+
+      // Tables from protobuf
+      let html = '';
+
+      // Config table
+      const config = obj.config || {};
+      html += '<div class="section"><h2>Config</h2><table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>';
+      html += '<tr><td>URL</td><td>' + (config.url || '—') + '</td></tr>';
+      html += '<tr><td>Method</td><td>' + (config.method || '—') + '</td></tr>';
+      html += '<tr><td>Requests/sec</td><td>' + (config.requestsPerSecond ?? config.requests_per_second ?? 0) + '</td></tr>';
+      html += '<tr><td>Duration (sec)</td><td>' + (config.durationSecs ?? config.duration_secs ?? 0) + '</td></tr>';
+      const headers = config.headers || [];
+      if (headers.length) {
+        headers.forEach(h => {
+          const n = h.name != null ? h.name : h.key;
+          const v = h.value != null ? h.value : h.val;
+          html += '<tr><td>Header</td><td>' + (n || '') + ': ' + (v || '') + '</td></tr>';
+        });
+      }
+      html += '</tbody></table></div>';
+
+      // Run info
+      html += '<div class="section"><h2>Run</h2><table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>';
+      html += '<tr><td>Run timestamp (unix nanos)</td><td>' + (obj.runTimestampUnixNanos ?? obj.run_timestamp_unix_nanos ?? 0) + '</td></tr>';
+      html += '<tr><td>Worker stats count</td><td>' + (obj.workerStats || obj.worker_stats || []).length + '</td></tr>';
+      html += '<tr><td>CDF points (all)</td><td>' + (obj.cdf || []).length + '</td></tr>';
+      html += '<tr><td>CDF points (success)</td><td>' + (cdfSuccess.length) + '</td></tr>';
+      html += '<tr><td>CDF points (non-success)</td><td>' + (cdfNonSuccess.length) + '</td></tr>';
+      html += '</tbody></table></div>';
+
+      // Worker stats table (last snapshot per worker, or first 20 rows)
+      if (workerStats.length > 0) {
+        const byWorker = {};
+        workerStats.forEach(w => {
+          const id = w.workerId ?? w.worker_id ?? 0;
+          byWorker[id] = w;
+        });
+        const lastPerWorker = Object.values(byWorker);
+        const toShow = lastPerWorker.slice(0, 30);
+        html += '<div class="section"><h2>Worker stats (last per worker, max 30)</h2><table><thead><tr>';
+        html += '<th>Worker ID</th><th>Request sent</th><th>In flight</th><th>Success</th><th>Client err</th><th>Server err</th><th>Timeouts</th>';
+        html += '</tr></thead><tbody>';
+        toShow.forEach(w => {
+          html += '<tr><td>' + (w.workerId ?? w.worker_id ?? 0) + '</td>';
+          html += '<td>' + (w.requestSent ?? w.request_sent ?? 0) + '</td>';
+          html += '<td>' + (w.inFlight ?? w.in_flight ?? 0) + '</td>';
+          html += '<td>' + (w.successfulResponse ?? w.successful_response ?? 0) + '</td>';
+          html += '<td>' + (w.clientErrorResponse ?? w.client_error_response ?? 0) + '</td>';
+          html += '<td>' + (w.serverErrorResponse ?? w.server_error_response ?? 0) + '</td>';
+          html += '<td>' + (w.timeouts ?? 0) + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+
+      // CDF summary table (p50, p95, p99 from each CDF)
+      function percentileLatency(points, p) {
+        if (!points || !points.length) return null;
+        const sorted = points.slice().sort((a, b) => {
+          const pa = Number(a.percentile ?? 0);
+          const pb = Number(b.percentile ?? 0);
+          return pa - pb;
+        });
+        const lat = pt => Number(pt.latencyNanos ?? pt.latency_nanos ?? 0);
+        const found = sorted.find(pt => Number(pt.percentile ?? 0) >= p);
+        return found != null ? lat(found) : (sorted.length ? lat(sorted[sorted.length - 1]) : null);
+      }
+      html += '<div class="section"><h2>CDF summary (latency ' + unit + ')</h2><table><thead><tr><th>CDF</th><th>P50</th><th>P95</th><th>P99</th></tr></thead><tbody>';
+      [['All', cdfAll], ['Success (2xx)', cdfSuccess], ['Non-success', cdfNonSuccess]].forEach(([label, pts]) => {
+        const p50 = percentileLatency(pts, 0.5);
+        const p95 = percentileLatency(pts, 0.95);
+        const p99 = percentileLatency(pts, 0.99);
+        html += '<tr><td>' + label + '</td><td>' + formatValue(p50, factor) + '</td><td>' + formatValue(p95, factor) + '</td><td>' + formatValue(p99, factor) + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+
+      document.getElementById('report').innerHTML = html;
+
+      console.log('Decoded LoadTestRunReport:', obj);
+      }
+
+      async function loadFile(file) {
+        if (!file || !file.name.toLowerCase().endsWith('.pb')) {
+          alert('Please select a .pb report file.');
+          return;
+        }
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          const report = LoadTestRunReport.decode(bytes);
+          const obj = LoadTestRunReport.toObject(report, { longs: String, enums: String });
+          renderReport(obj);
+        } catch (e) {
+          alert('Failed to load report: ' + e.message);
+          console.error(e);
+        }
+      }
+
+      const dropzone = document.getElementById('dropzone');
+      const fileInput = document.getElementById('fileInput');
+      document.getElementById('pickBtn').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) loadFile(fileInput.files[0]);
+      });
+      dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+      });
+
+      document.getElementById('report').innerHTML = '<p>Select or drop a <b>.pb</b> report file above.</p>';
+    })();
+  </script>
+</body>
+</html>

@@ -27,6 +27,7 @@ const STYLES: Styles = Styles::styled()
     .context_value(AnsiColor::Cyan.on_default().italic());
 
 /// Parsed CLI arguments (no clap dependency at the type level).
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Args {
     pub url: url::Url,
@@ -56,6 +57,7 @@ pub struct Args {
     pub upload_file_path: Option<PathBuf>,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum HttpProtocol {
     Http1_1,
@@ -63,6 +65,7 @@ pub enum HttpProtocol {
 }
 
 impl AsRef<str> for HttpProtocol {
+    #[inline]
     fn as_ref(&self) -> &str {
         match *self {
             HttpProtocol::Http1_1 => "HTTP/1.1",
@@ -71,6 +74,7 @@ impl AsRef<str> for HttpProtocol {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum Payload {
     Data(Bytes),
@@ -167,6 +171,11 @@ struct Cli {
 }
 
 /// Parse command-line arguments and return a simple struct.
+///
+/// # Errors
+///
+/// Returns an error if URL parsing fails, headers are invalid, or other CLI validation fails.
+#[inline]
 pub async fn parse() -> Result<Args> {
     let cli = Cli::parse();
     args_from_cli(cli).await

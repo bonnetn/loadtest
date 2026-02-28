@@ -7,7 +7,6 @@ use rust_decimal::prelude::ToPrimitive as _;
 
 use crate::cdf;
 use crate::cli::Args;
-use crate::error::Result;
 use crate::proto::{
     CdfPoint, Header, LoadTestConfig, LoadTestRunReport, WorkerStats as ProtoWorkerStats,
 };
@@ -20,7 +19,7 @@ const STEPS: u64 = 4;
 
 /// Builds the run report and returns the serialized protobuf. Prints CDFs to stdout.
 /// Caller is responsible for writing the bytes (e.g. `tokio::fs::write(path, &bytes).await`).
-pub fn build_run_report(args: &Args, result: &RunResult) -> Result<Vec<u8>> {
+pub(crate) fn build_run_report(args: &Args, result: &RunResult) -> Vec<u8> {
     let cdf_success = cdf::calculate_cdf(
         START_PERCENTILE,
         RESOLUTION,
@@ -47,8 +46,7 @@ pub fn build_run_report(args: &Args, result: &RunResult) -> Result<Vec<u8>> {
 
     let report = build_proto(args, result, cdf_success, cdf_non_success, cdf_all);
 
-    let buf = report.encode_to_vec();
-    Ok(buf)
+    report.encode_to_vec()
 }
 
 fn build_proto(
@@ -117,7 +115,10 @@ fn args_to_proto(args: &Args) -> LoadTestConfig {
 fn map_header_to_proto((name, value): (&http::HeaderName, &http::HeaderValue)) -> Header {
     Header {
         name: name.as_str().to_owned(),
-        value: value.to_str().unwrap().to_owned(),
+        value: value
+            .to_str()
+            .expect("header value must be valid UTF-8 for report")
+            .to_owned(),
     }
 }
 
@@ -338,7 +339,7 @@ mod tests {
     fn build_run_report_returns_serialized_protobuf_with_config_and_cdfs() {
         let args = minimal_args("https://test.example/", "GET", 10, 5);
         let result = run_result_full();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_full());
     }
@@ -347,7 +348,7 @@ mod tests {
     fn build_run_report_empty_latencies_and_workers() {
         let args = minimal_args("https://empty.example/", "GET", 5, 10);
         let result = run_result_empty();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_empty());
     }
@@ -356,7 +357,7 @@ mod tests {
     fn build_run_report_multiple_workers() {
         let args = minimal_args("https://multi.example/", "POST", 20, 60);
         let result = run_result_multi_worker();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_multi_worker());
     }
@@ -365,7 +366,7 @@ mod tests {
     fn build_run_report_cdf_latency_values() {
         let args = minimal_args("https://cdf.example/", "GET", 1, 1);
         let result = run_result_cdf();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_cdf());
     }
@@ -380,7 +381,7 @@ mod tests {
             http::HeaderMap::new(),
         );
         let result = run_result_no_headers();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_no_headers());
     }
@@ -389,7 +390,7 @@ mod tests {
     fn build_run_report_timestamp_at_epoch() {
         let args = minimal_args("https://epoch.example/", "GET", 1, 1);
         let result = run_result_epoch();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_epoch());
     }
@@ -398,7 +399,7 @@ mod tests {
     fn build_run_report_config_method_and_zero_rps() {
         let args = minimal_args("https://config.example/", "POST", 0, 0);
         let result = run_result_zero_rps();
-        let bytes = build_run_report(&args, &result).unwrap();
+        let bytes = build_run_report(&args, &result);
         let report = LoadTestRunReport::decode(bytes.as_slice()).unwrap();
         assert_eq!(report, expected_zero_rps());
     }

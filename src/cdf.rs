@@ -15,7 +15,7 @@ use std::time::Duration;
 /// - `durations`: latencies; will be sorted in place.
 ///
 /// Returns `(percentile, duration)` pairs with percentile in [0, 1].
-pub fn calculate_cdf<'a>(
+pub(crate) fn calculate_cdf<'a>(
     start: f64,
     resolution: u64,
     steps: u64,

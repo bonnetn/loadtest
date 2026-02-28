@@ -8,6 +8,7 @@ use thiserror::Error;
 pub type Result<T, E = AppError> = std::result::Result<T, E>;
 
 /// Loadtest error.
+#[non_exhaustive]
 #[derive(Error, Diagnostic, Debug)]
 pub enum AppError {
     /// Header line has no colon (expected "Name: Value").

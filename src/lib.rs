@@ -118,15 +118,17 @@ mod worker_manager;
 #[cfg(test)]
 mod report_fixtures;
 
-pub use cdf::calculate_cdf;
 pub use cli::{Args, HttpProtocol, Payload, parse};
 pub use display::format_args;
 pub use error::{AppError, Result};
-pub use report::build_run_report;
-pub use worker_manager::{RunResult, spawn_workers};
 
 /// Entry point: run load test (spawn workers, write report). Call after parsing CLI.
 /// If `args.dry_run` is true, the caller should only print [`format_args`] and return.
+///
+/// # Errors
+///
+/// Returns an error if spawning workers, building the report, or writing the output file fails.
+#[inline]
 pub async fn run(args: Args) -> Result<()> {
     if args.dry_run {
         return Ok(());
@@ -134,7 +136,7 @@ pub async fn run(args: Args) -> Result<()> {
     let result = worker_manager::spawn_workers(&args).await?;
     let args_clone = args.clone();
     let (bytes, path) = tokio::task::spawn_blocking(move || {
-        let bytes = report::build_run_report(&args_clone, &result)?;
+        let bytes = report::build_run_report(&args_clone, &result);
         Ok::<_, crate::AppError>((bytes, args_clone.output))
     })
     .await

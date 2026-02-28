@@ -1,9 +1,12 @@
 //! Format CLI args as human-readable text (for dry-run output and testing).
 
+use std::fmt::Write as _;
+
 use crate::cli::{Args, Payload};
 
 /// Returns the same content as the dry-run output, as plain text (no ANSI styling).
 /// Callers can print this to stdout or assert on it in tests.
+#[inline]
 pub fn format_args(args: &Args) -> String {
     let mut out = String::new();
     out.push_str("Arguments\n");
@@ -16,69 +19,69 @@ pub fn format_args(args: &Args) -> String {
 
 fn format_args_request(args: &Args) -> String {
     let mut out = String::new();
-    out.push_str(&format!("  URL: {}\n", args.url));
+    writeln!(out, "  URL: {}", args.url).expect("write to String");
     out.push_str("  Headers:\n");
     for (name, value) in &args.header {
         let value_str = value.to_str().unwrap_or("<invalid>");
-        out.push_str(&format!("    {}: {}\n", name.as_str(), value_str));
+        writeln!(out, "    {}: {}", name.as_str(), value_str).expect("write to String");
     }
-    out.push_str(&format!("  Insecure: {}\n", args.insecure));
-    out.push_str(&format!("  Method: {}\n", args.request));
+    writeln!(out, "  Insecure: {}", args.insecure).expect("write to String");
+    writeln!(out, "  Method: {}", args.request).expect("write to String");
     out
 }
 
 fn format_args_tls(args: &Args) -> String {
     let mut out = String::new();
     if let Some(ref cacert) = args.cacert {
-        out.push_str(&format!("  CA certificate file: {}\n", cacert.display()));
+        writeln!(out, "  CA certificate file: {}", cacert.display()).expect("write to String");
     }
     if let Some(ref cert) = args.cert {
-        out.push_str(&format!("  Certificate file : {}\n", cert.display()));
+        writeln!(out, "  Certificate file : {}", cert.display()).expect("write to String");
     }
     if let Some(ref key) = args.key {
-        out.push_str(&format!("  Key file: {}\n", key.display()));
+        writeln!(out, "  Key file: {}", key.display()).expect("write to String");
     }
     out
 }
 
 fn format_args_timing(args: &Args) -> String {
     let mut out = String::new();
-    out.push_str(&format!("  Follow redirects: {}\n", args.location));
-    out.push_str(&format!(
-        "  Throughput: {} requests/second\n",
+    writeln!(out, "  Follow redirects: {}", args.location).expect("write to String");
+    writeln!(
+        out,
+        "  Throughput: {} requests/second",
         args.requests_per_second
-    ));
-    out.push_str(&format!(
-        "  Load test duration: {} seconds\n",
+    )
+    .expect("write to String");
+    writeln!(
+        out,
+        "  Load test duration: {} seconds",
         args.duration.as_secs()
-    ));
+    )
+    .expect("write to String");
     if let Some(max_time) = args.max_time {
-        out.push_str(&format!(
-            "  Request timeout: {} seconds\n",
-            max_time.as_secs()
-        ));
+        writeln!(out, "  Request timeout: {} seconds", max_time.as_secs())
+            .expect("write to String");
     }
     if let Some(connect_timeout) = args.connect_timeout {
-        out.push_str(&format!(
-            "  Connection timeout: {} seconds\n",
-            connect_timeout.as_secs()
-        ));
+        writeln!(out, "  Connection timeout: {} seconds", connect_timeout.as_secs())
+            .expect("write to String");
     }
     out
 }
 
 fn format_args_output(args: &Args) -> String {
     let mut out = String::new();
-    out.push_str(&format!("  Output file: {}\n", args.output.display()));
-    out.push_str(&format!("  Protocol: {}\n", args.protocol.as_ref()));
+    writeln!(out, "  Output file: {}", args.output.display()).expect("write to String");
+    writeln!(out, "  Protocol: {}", args.protocol.as_ref()).expect("write to String");
     let payload_size = match args.payload {
         Some(Payload::Data(ref data)) => data.len(),
         Some(Payload::File(ref file)) => file.len(),
         None => 0,
     };
-    out.push_str(&format!("  Request body size: {} bytes\n", payload_size));
+    writeln!(out, "  Request body size: {payload_size} bytes").expect("write to String");
     if let Some(ref path) = args.upload_file_path {
-        out.push_str(&format!("  Upload file: {}\n", path.display()));
+        writeln!(out, "  Upload file: {}", path.display()).expect("write to String");
     }
     out
 }

@@ -24,14 +24,14 @@ use crate::{
 
 /// Result of a load test run: run timestamp, worker snapshots, and latencies split by success.
 #[derive(Clone)]
-pub struct RunResult {
+pub(crate) struct RunResult {
     pub run_timestamp: SystemTime,
     pub worker_stats: Vec<WorkerStats>,
     pub success_latencies: Vec<Duration>,
     pub non_success_latencies: Vec<Duration>,
 }
 
-pub async fn spawn_workers(args: &Args) -> Result<RunResult> {
+pub(crate) async fn spawn_workers(args: &Args) -> Result<RunResult> {
     let run_timestamp = SystemTime::now();
     let concurrency = tokio::runtime::Handle::current().metrics().num_workers();
 

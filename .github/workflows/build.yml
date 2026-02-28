@@ -45,6 +45,10 @@ jobs:
         run: cargo deny check
       
   build_non_macos:
+    needs:
+      - check
+      - test
+      - lint
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +67,10 @@ jobs:
           path: target/${{ matrix.target }}/release/loadtest
 
   build_macos:
+    needs:
+      - check
+      - test
+      - lint
     strategy:
       fail-fast: false
       matrix:

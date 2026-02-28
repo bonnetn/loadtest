@@ -64,8 +64,12 @@ fn format_args_timing(args: &Args) -> String {
             .expect("write to String");
     }
     if let Some(connect_timeout) = args.connect_timeout {
-        writeln!(out, "  Connection timeout: {} seconds", connect_timeout.as_secs())
-            .expect("write to String");
+        writeln!(
+            out,
+            "  Connection timeout: {} seconds",
+            connect_timeout.as_secs()
+        )
+        .expect("write to String");
     }
     out
 }

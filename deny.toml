@@ -10,9 +10,10 @@ targets = [
 [licenses]
 allow = [
     "Apache-2.0",
-    "Unicode-3.0",
-    "MIT",
-    "ISC",
     "BSD-3-Clause",
+    "ISC",
+    "MIT",
     "OpenSSL",
+    "Unicode-3.0",
+    "Zlib",
 ]

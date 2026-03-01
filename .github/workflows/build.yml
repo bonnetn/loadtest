@@ -13,7 +13,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-rust
       - name: Check
         run: cargo check
@@ -23,7 +23,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-rust
       - name: Run cargo test
         run: cargo test
@@ -33,7 +33,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-rust
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
@@ -55,13 +55,13 @@ jobs:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, x86_64-pc-windows-gnu]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
       - name: Build binaries in release mode
         run: cross build --release --target ${{ matrix.target }}
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loadtest-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/loadtest
@@ -77,14 +77,14 @@ jobs:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-rust
         with:
           target: ${{ matrix.target }}
       - name: Build binaries in release mode
         run: cargo build --release --target ${{ matrix.target }}
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loadtest-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/loadtest

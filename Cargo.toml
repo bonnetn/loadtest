@@ -13,7 +13,7 @@ categories = ["development-tools::testing"]
 prost-build = "0.14"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 prost = "0.14"
 http = "1.5.0"
 url = "2"

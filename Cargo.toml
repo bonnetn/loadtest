@@ -26,7 +26,7 @@ reqwest = { version = "0.13.2", features = ["http2", "default-tls", "stream", "r
 rust_decimal = "1"
 chrono = "0.4.45"
 bytes = "1.12.1"
-console = "0.16.2"
+console = "0.16.6"
 rustls-native-certs = "0.8.4"
 
 [dev-dependencies]

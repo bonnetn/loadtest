@@ -13,8 +13,12 @@ impl Tester {
 
         for id in 0..runtime_count {
             threads.push(std::thread::spawn(move || -> miette::Result<()> {
-                pin_current_thread(id)?;
-                let runtime = compio::runtime::Runtime::builder().build()?;
+                pin_current_thread(id).map_err(|error| {
+                    miette::miette!("failed to pin worker thread {id}: {error}")
+                })?;
+                let runtime = compio::runtime::Runtime::builder()
+                    .build()
+                    .map_err(|error| miette::miette!("failed to build runtime {id}: {error}"))?;
                 runtime.block_on(async {});
                 Ok(())
             }));

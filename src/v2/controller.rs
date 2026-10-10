@@ -44,4 +44,14 @@ impl Controller {
         .await
         .map(|_| ())
     }
+
+    pub async fn cancel_workers(&self) -> miette::Result<()> {
+        try_join_all(
+            self.handles
+                .iter()
+                .map(|handle| handle.send(WorkerCommand::Cancel)),
+        )
+        .await
+        .map(|_| ())
+    }
 }

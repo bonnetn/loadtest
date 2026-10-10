@@ -1,9 +1,12 @@
 use std::time::{Duration, Instant};
 
+use futures::{FutureExt as _, pin_mut, select};
 use miette::{IntoDiagnostic, WrapErr};
 use rand_distr::Exp;
 
 use super::{controller::Controller, worker::Worker};
+
+const TOTAL_THROUGHPUT: f64 = 10_000.0;
 
 pub struct Tester;
 
@@ -18,7 +21,6 @@ impl Tester {
             .unwrap_or(1);
         let mut threads = Vec::with_capacity(runtime_count);
         let mut handles = Vec::with_capacity(runtime_count);
-
         for id in 0..runtime_count {
             let (worker, handle) = Worker::new();
             handles.push(handle);
@@ -52,14 +54,26 @@ impl Tester {
                     .wrap_err("failed to build controller runtime")?;
                 let start_instant = Instant::now() + Duration::from_millis(100);
                 let end_instant = start_instant + Duration::from_secs(10);
-                let arrival_distribution = Exp::new(10.0)
+                let per_worker_throughput = TOTAL_THROUGHPUT / controller.handles().len() as f64;
+                let arrival_distribution = Exp::new(per_worker_throughput)
                     .into_diagnostic()
                     .wrap_err("failed to create arrival distribution")?;
-                runtime.block_on(controller.send_traffic(
-                    arrival_distribution,
-                    start_instant,
-                    end_instant,
-                ))?;
+                let traffic =
+                    controller.send_traffic(arrival_distribution, start_instant, end_instant);
+                let ctrl_c = compio::signal::ctrl_c();
+                pin_mut!(traffic, ctrl_c);
+                runtime.block_on(async {
+                    select! {
+                        result = traffic.as_mut().fuse() => result,
+                        signal = ctrl_c.fuse() => {
+                            let signal_result = signal.into_diagnostic()
+                                .wrap_err("failed to receive Ctrl+C");
+                            controller.cancel_workers().await?;
+                            signal_result?;
+                            traffic.as_mut().await
+                        }
+                    }
+                })?;
                 Ok(())
             })
             .into_diagnostic()

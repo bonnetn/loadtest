@@ -1,13 +1,16 @@
 use std::{
     cell::Cell,
+    cell::RefCell,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use async_channel::{Receiver, Sender};
-use futures::channel::oneshot;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use futures::{FutureExt as _, channel::oneshot, pin_mut, select};
+use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
+
+use super::cancellation::CancellationToken;
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -23,41 +26,66 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let mut random = SmallRng::from_os_rng();
+        let cancellation = CancellationToken::new();
+        let random = Rc::new(RefCell::new(SmallRng::from_os_rng()));
         let in_flight = Rc::new(Cell::new(0));
         let logger_in_flight = Rc::clone(&in_flight);
+        let logger_cancellation = cancellation.clone();
         compio::runtime::spawn(async move {
             let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
             loop {
-                interval.tick().await;
-                println!(
-                    "worker {} in-flight tasks: {}",
-                    std::thread::current().name().unwrap_or("unnamed"),
-                    logger_in_flight.get()
-                );
+                let cancelled = logger_cancellation.cancelled();
+                pin_mut!(cancelled);
+                select! {
+                    _ = cancelled.fuse() => break,
+                    _ = interval.tick().fuse() => println!(
+                        "worker {} in-flight tasks: {}",
+                        std::thread::current().name().unwrap_or("unnamed"),
+                        logger_in_flight.get()
+                    ),
+                }
             }
         })
         .detach();
 
-        while let Ok(request) = self.receiver.recv().await {
+        loop {
+            let receive = self.receiver.recv();
+            pin_mut!(receive);
+            let request = select! {
+                request = receive.fuse() => request,
+                _ = cancellation.cancelled().fuse() => break,
+            };
+            let Ok(request) = request else { break };
             let WorkerRequest { command, response } = request;
-            let result = match command {
+            match command {
                 WorkerCommand::SendTraffic {
                     arrival_distribution,
                     start_instant,
                     end_instant,
                 } => {
-                    send_traffic(
-                        arrival_distribution,
-                        start_instant,
-                        end_instant,
-                        &mut random,
-                        Rc::clone(&in_flight),
-                    )
-                    .await
+                    let task_cancellation = cancellation.clone();
+                    let task_in_flight = Rc::clone(&in_flight);
+                    let task_random = Rc::clone(&random);
+                    compio::runtime::spawn(async move {
+                        let result = send_traffic(
+                            arrival_distribution,
+                            start_instant,
+                            end_instant,
+                            task_random,
+                            task_in_flight,
+                            task_cancellation,
+                        )
+                        .await;
+                        let _ = response.send(result);
+                    })
+                    .detach();
+                    continue;
                 }
-            };
-            let _ = response.send(result);
+                WorkerCommand::Cancel => {
+                    cancellation.cancel();
+                    let _ = response.send(Ok(()));
+                }
+            }
         }
         Ok(())
     }
@@ -67,8 +95,9 @@ async fn send_traffic(
     arrival_distribution: Exp<f64>,
     start_instant: Instant,
     end_instant: Instant,
-    random: &mut impl Rng,
+    random: Rc<RefCell<SmallRng>>,
     in_flight: Rc<Cell<usize>>,
+    cancellation: CancellationToken,
 ) -> miette::Result<()> {
     if end_instant < start_instant {
         return Err(miette::miette!(
@@ -76,34 +105,52 @@ async fn send_traffic(
         ));
     }
 
-    if Instant::now() < start_instant {
-        compio::time::sleep_until(start_instant).await;
+    if Instant::now() < start_instant && !sleep_until_or_cancel(start_instant, &cancellation).await
+    {
+        return Ok(());
     }
 
     loop {
+        if cancellation.is_cancelled() {
+            break;
+        }
         let now = Instant::now();
         if now >= end_instant {
             break;
         }
 
-        let delay = Duration::from_secs_f64(arrival_distribution.sample(random));
+        let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut *random.borrow_mut()));
         let next_arrival = now.checked_add(delay).unwrap_or(end_instant);
         if next_arrival >= end_instant {
-            compio::time::sleep_until(end_instant).await;
+            sleep_until_or_cancel(end_instant, &cancellation).await;
             break;
         }
 
-        compio::time::sleep_until(next_arrival).await;
+        if !sleep_until_or_cancel(next_arrival, &cancellation).await {
+            break;
+        }
         in_flight.set(in_flight.get() + 1);
         let task_in_flight = Rc::clone(&in_flight);
+        let task_cancellation = cancellation.clone();
         compio::runtime::spawn(async move {
-            compio::time::sleep(SIMULATED_WORK_DURATION).await;
+            sleep_until_or_cancel(Instant::now() + SIMULATED_WORK_DURATION, &task_cancellation)
+                .await;
             task_in_flight.set(task_in_flight.get() - 1);
         })
         .detach();
     }
 
     Ok(())
+}
+
+async fn sleep_until_or_cancel(deadline: Instant, cancellation: &CancellationToken) -> bool {
+    let sleep = compio::time::sleep_until(deadline);
+    let cancelled = cancellation.cancelled();
+    pin_mut!(sleep, cancelled);
+    select! {
+        _ = sleep.fuse() => true,
+        _ = cancelled.fuse() => false,
+    }
 }
 
 #[derive(Debug)]
@@ -113,6 +160,7 @@ pub enum WorkerCommand {
         start_instant: Instant,
         end_instant: Instant,
     },
+    Cancel,
 }
 
 #[derive(Debug)]

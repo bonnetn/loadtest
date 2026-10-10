@@ -1,3 +1,9 @@
+use std::time::Instant;
+
+use futures::future::try_join_all;
+use rand_distr::Exp;
+
+use super::worker::WorkerCommand;
 use super::worker::WorkerHandle;
 
 #[derive(Debug, Default)]
@@ -20,5 +26,22 @@ impl Controller {
 
     pub fn add_handle(&mut self, handle: WorkerHandle) {
         self.handles.push(handle);
+    }
+
+    pub async fn send_traffic(
+        &self,
+        arrival_distribution: Exp<f64>,
+        start_instant: Instant,
+        end_instant: Instant,
+    ) -> miette::Result<()> {
+        try_join_all(self.handles.iter().map(|handle| {
+            handle.send(WorkerCommand::SendTraffic {
+                arrival_distribution: arrival_distribution.clone(),
+                start_instant,
+                end_instant,
+            })
+        }))
+        .await
+        .map(|_| ())
     }
 }

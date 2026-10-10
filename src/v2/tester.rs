@@ -1,4 +1,7 @@
+use std::time::{Duration, Instant};
+
 use miette::{IntoDiagnostic, WrapErr};
+use rand_distr::Exp;
 
 use super::{controller::Controller, worker::Worker};
 
@@ -42,6 +45,21 @@ impl Tester {
                 for handle in handles {
                     controller.add_handle(handle);
                 }
+
+                let runtime = compio::runtime::Runtime::builder()
+                    .build()
+                    .into_diagnostic()
+                    .wrap_err("failed to build controller runtime")?;
+                let start_instant = Instant::now() + Duration::from_millis(100);
+                let end_instant = start_instant + Duration::from_secs(10);
+                let arrival_distribution = Exp::new(10.0)
+                    .into_diagnostic()
+                    .wrap_err("failed to create arrival distribution")?;
+                runtime.block_on(controller.send_traffic(
+                    arrival_distribution,
+                    start_instant,
+                    end_instant,
+                ))?;
                 Ok(())
             })
             .into_diagnostic()

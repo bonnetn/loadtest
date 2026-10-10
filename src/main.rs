@@ -114,7 +114,7 @@ fn main() -> miette::Result<()> {
     let runtime = compio::runtime::Runtime::builder()
         .build()
         .map_err(|error| miette::miette!("failed to build Compio runtime: {error}"))?;
-    runtime.block_on(run_async())
+    Ok(runtime.block_on(run_async())?)
 }
 
 async fn run_async() -> loadtest::Result<()> {

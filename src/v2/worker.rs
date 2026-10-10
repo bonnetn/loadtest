@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -9,6 +10,7 @@ use rand::{Rng, rng};
 use rand_distr::{Distribution, Exp};
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
+const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Worker {
     receiver: Receiver<WorkerRequest>,
@@ -22,6 +24,21 @@ impl Worker {
 
     pub async fn run(self) -> miette::Result<()> {
         let mut random = rng();
+        let in_flight = Rc::new(Cell::new(0));
+        let logger_in_flight = Rc::clone(&in_flight);
+        compio::runtime::spawn(async move {
+            let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
+            loop {
+                interval.tick().await;
+                println!(
+                    "worker {} in-flight tasks: {}",
+                    std::thread::current().name().unwrap_or("unnamed"),
+                    logger_in_flight.get()
+                );
+            }
+        })
+        .detach();
+
         while let Ok(request) = self.receiver.recv().await {
             let WorkerRequest { command, response } = request;
             let result = match command {
@@ -35,6 +52,7 @@ impl Worker {
                         start_instant,
                         end_instant,
                         &mut random,
+                        Rc::clone(&in_flight),
                     )
                     .await
                 }
@@ -50,6 +68,7 @@ async fn send_traffic(
     start_instant: Instant,
     end_instant: Instant,
     random: &mut impl Rng,
+    in_flight: Rc<Cell<usize>>,
 ) -> miette::Result<()> {
     if end_instant < start_instant {
         return Err(miette::miette!(
@@ -75,10 +94,11 @@ async fn send_traffic(
         }
 
         compio::time::sleep_until(next_arrival).await;
-        compio::runtime::spawn(async {
-            let work = Cell::new(0);
+        in_flight.set(in_flight.get() + 1);
+        let task_in_flight = Rc::clone(&in_flight);
+        compio::runtime::spawn(async move {
             compio::time::sleep(SIMULATED_WORK_DURATION).await;
-            work.set(work.get() + 1);
+            task_in_flight.set(task_in_flight.get() - 1);
         })
         .detach();
     }

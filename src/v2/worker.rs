@@ -7,8 +7,6 @@ use async_channel::{Receiver, Sender};
 use futures::channel::oneshot;
 use rand::{Rng, rng};
 use rand_distr::{Distribution, Exp};
-use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive as _;
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
 
@@ -28,10 +26,18 @@ impl Worker {
             let WorkerRequest { command, response } = request;
             let result = match command {
                 WorkerCommand::SendTraffic {
-                    throughput,
+                    arrival_distribution,
                     start_instant,
                     end_instant,
-                } => send_traffic(throughput, start_instant, end_instant, &mut random).await,
+                } => {
+                    send_traffic(
+                        arrival_distribution,
+                        start_instant,
+                        end_instant,
+                        &mut random,
+                    )
+                    .await
+                }
             };
             let _ = response.send(result);
         }
@@ -40,25 +46,17 @@ impl Worker {
 }
 
 async fn send_traffic(
-    throughput: Decimal,
+    arrival_distribution: Exp<f64>,
     start_instant: Instant,
     end_instant: Instant,
     random: &mut impl Rng,
 ) -> miette::Result<()> {
-    if throughput <= Decimal::ZERO {
-        return Err(miette::miette!("throughput must be greater than zero"));
-    }
     if end_instant < start_instant {
         return Err(miette::miette!(
             "end instant must not precede start instant"
         ));
     }
 
-    let rate = throughput
-        .to_f64()
-        .ok_or_else(|| miette::miette!("throughput cannot be represented as f64"))?;
-    let distribution = Exp::new(rate)
-        .map_err(|error| miette::miette!("failed to create Poisson distribution: {error}"))?;
     if Instant::now() < start_instant {
         compio::time::sleep_until(start_instant).await;
     }
@@ -69,7 +67,7 @@ async fn send_traffic(
             break;
         }
 
-        let delay = Duration::from_secs_f64(distribution.sample(random));
+        let delay = Duration::from_secs_f64(arrival_distribution.sample(random));
         let next_arrival = now.checked_add(delay).unwrap_or(end_instant);
         if next_arrival >= end_instant {
             compio::time::sleep_until(end_instant).await;
@@ -91,7 +89,7 @@ async fn send_traffic(
 #[derive(Debug)]
 pub enum WorkerCommand {
     SendTraffic {
-        throughput: Decimal,
+        arrival_distribution: Exp<f64>,
         start_instant: Instant,
         end_instant: Instant,
     },

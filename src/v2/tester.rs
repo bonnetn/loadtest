@@ -1,3 +1,5 @@
+use miette::{IntoDiagnostic, WrapErr};
+
 use super::worker::Worker;
 
 pub struct Tester;
@@ -18,18 +20,18 @@ impl Tester {
             let thread = std::thread::Builder::new()
                 .name(format!("worker-{id}"))
                 .spawn(move || -> miette::Result<()> {
-                    pin_current_thread(id).map_err(|error| {
-                        miette::miette!("failed to pin worker thread {id}: {error}")
-                    })?;
+                    pin_current_thread(id)
+                        .into_diagnostic()
+                        .wrap_err_with(|| format!("failed to pin worker thread {id}"))?;
                     let runtime = compio::runtime::Runtime::builder()
                         .build()
-                        .map_err(|error| {
-                            miette::miette!("failed to build runtime {id}: {error}")
-                        })?;
+                        .into_diagnostic()
+                        .wrap_err_with(|| format!("failed to build runtime {id}"))?;
                     runtime.block_on(worker.run())?;
                     Ok(())
                 })
-                .map_err(|error| miette::miette!("failed to spawn worker thread {id}: {error}"))?;
+                .into_diagnostic()
+                .wrap_err_with(|| format!("failed to spawn worker thread {id}"))?;
             threads.push(thread);
         }
 

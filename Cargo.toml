@@ -26,7 +26,7 @@ libc = "0.2.189"
 futures = "0.3.34"
 chrono = "0.4.45"
 rust_decimal = "1.43.0"
-rand = "0.9.5"
+rand = { version = "0.9.5", features = ["small_rng"] }
 rand_distr = "0.5.1"
 bytes = "1.12.1"
 console = "0.16.6"

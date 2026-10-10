@@ -6,7 +6,7 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use futures::channel::oneshot;
-use rand::{Rng, rng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
@@ -23,7 +23,7 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let mut random = rng();
+        let mut random = SmallRng::from_os_rng();
         let in_flight = Rc::new(Cell::new(0));
         let logger_in_flight = Rc::clone(&in_flight);
         compio::runtime::spawn(async move {

@@ -12,7 +12,7 @@ use rand_distr::{Distribution, Exp};
 
 use super::cancellation::CancellationToken;
 
-const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
+const SIMULATED_WORK_DURATION: Duration = Duration::from_secs(1);
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Worker {

@@ -1,6 +1,6 @@
 use miette::{IntoDiagnostic, WrapErr};
 
-use super::worker::Worker;
+use super::{controller::Controller, worker::Worker};
 
 pub struct Tester;
 
@@ -14,10 +14,11 @@ impl Tester {
             .map(std::num::NonZeroUsize::get)
             .unwrap_or(1);
         let mut threads = Vec::with_capacity(runtime_count);
+        let mut handles = Vec::with_capacity(runtime_count);
 
         for id in 0..runtime_count {
             let (worker, handle) = Worker::new();
-            drop(handle);
+            handles.push(handle);
             let thread = std::thread::Builder::new()
                 .name(format!("worker-{id}"))
                 .spawn(move || -> miette::Result<()> {
@@ -33,6 +34,18 @@ impl Tester {
                 .wrap_err_with(|| format!("failed to spawn worker thread {id}"))?;
             threads.push(thread);
         }
+
+        let controller_thread = std::thread::spawn(move || -> miette::Result<()> {
+            let mut controller = Controller::new();
+            for handle in handles {
+                controller.add_handle(handle);
+            }
+            Ok(())
+        });
+
+        controller_thread
+            .join()
+            .map_err(|_| miette::miette!("controller thread panicked"))??;
 
         for thread in threads {
             thread

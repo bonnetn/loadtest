@@ -13,6 +13,10 @@ impl Worker {
     pub fn id(self) -> usize {
         self.id
     }
+
+    pub async fn run(self) -> miette::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]

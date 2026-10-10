@@ -1,3 +1,5 @@
+use super::worker::Worker;
+
 pub struct Tester;
 
 impl Tester {
@@ -12,16 +14,23 @@ impl Tester {
         let mut threads = Vec::with_capacity(runtime_count);
 
         for id in 0..runtime_count {
-            threads.push(std::thread::spawn(move || -> miette::Result<()> {
-                pin_current_thread(id).map_err(|error| {
-                    miette::miette!("failed to pin worker thread {id}: {error}")
-                })?;
-                let runtime = compio::runtime::Runtime::builder()
-                    .build()
-                    .map_err(|error| miette::miette!("failed to build runtime {id}: {error}"))?;
-                runtime.block_on(async {});
-                Ok(())
-            }));
+            let worker = Worker::new(id);
+            let thread = std::thread::Builder::new()
+                .name(format!("worker-{id}"))
+                .spawn(move || -> miette::Result<()> {
+                    pin_current_thread(id).map_err(|error| {
+                        miette::miette!("failed to pin worker thread {id}: {error}")
+                    })?;
+                    let runtime = compio::runtime::Runtime::builder()
+                        .build()
+                        .map_err(|error| {
+                            miette::miette!("failed to build runtime {id}: {error}")
+                        })?;
+                    runtime.block_on(worker.run())?;
+                    Ok(())
+                })
+                .map_err(|error| miette::miette!("failed to spawn worker thread {id}: {error}"))?;
+            threads.push(thread);
         }
 
         for thread in threads {

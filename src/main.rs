@@ -107,14 +107,13 @@ use std::io::Write as _;
 
 use console::{Term, style};
 
-use loadtest::{format_args, parse, worker_manager, write_run_report};
+use loadtest::{format_args, parse, v2::tester::Tester, worker_manager, write_run_report};
 
 fn main() -> miette::Result<()> {
-    pin_current_thread(0).map_err(|error| miette::miette!("failed to pin main thread: {error}"))?;
     let runtime = compio::runtime::Runtime::builder()
         .build()
         .map_err(|error| miette::miette!("failed to build Compio runtime: {error}"))?;
-    Ok(runtime.block_on(run_async())?)
+    Ok(runtime.block_on(Tester::new().run())?)
 }
 
 async fn run_async() -> loadtest::Result<()> {

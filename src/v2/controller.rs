@@ -1,8 +1,8 @@
-use super::worker::WorkerChannel;
+use super::worker::WorkerHandle;
 
 #[derive(Debug, Default)]
 pub struct Controller {
-    channels: Vec<WorkerChannel>,
+    handles: Vec<WorkerHandle>,
 }
 
 impl Controller {
@@ -10,15 +10,15 @@ impl Controller {
         Self::default()
     }
 
-    pub fn with_channels(channels: Vec<WorkerChannel>) -> Self {
-        Self { channels }
+    pub fn with_handles(handles: Vec<WorkerHandle>) -> Self {
+        Self { handles }
     }
 
-    pub fn channels(&self) -> &[WorkerChannel] {
-        &self.channels
+    pub fn handles(&self) -> &[WorkerHandle] {
+        &self.handles
     }
 
-    pub fn add_channel(&mut self, channel: WorkerChannel) {
-        self.channels.push(channel);
+    pub fn add_handle(&mut self, handle: WorkerHandle) {
+        self.handles.push(handle);
     }
 }

@@ -16,7 +16,8 @@ impl Tester {
         let mut threads = Vec::with_capacity(runtime_count);
 
         for id in 0..runtime_count {
-            let worker = Worker::new(id);
+            let (worker, handle) = Worker::new();
+            drop(handle);
             let thread = std::thread::Builder::new()
                 .name(format!("worker-{id}"))
                 .spawn(move || -> miette::Result<()> {

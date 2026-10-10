@@ -35,13 +35,17 @@ impl Tester {
             threads.push(thread);
         }
 
-        let controller_thread = std::thread::spawn(move || -> miette::Result<()> {
-            let mut controller = Controller::new();
-            for handle in handles {
-                controller.add_handle(handle);
-            }
-            Ok(())
-        });
+        let controller_thread = std::thread::Builder::new()
+            .name("controller".to_owned())
+            .spawn(move || -> miette::Result<()> {
+                let mut controller = Controller::new();
+                for handle in handles {
+                    controller.add_handle(handle);
+                }
+                Ok(())
+            })
+            .into_diagnostic()
+            .wrap_err("failed to spawn controller thread")?;
 
         controller_thread
             .join()

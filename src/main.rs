@@ -116,6 +116,7 @@ fn main() -> miette::Result<()> {
     Ok(runtime.block_on(Tester::new().run())?)
 }
 
+#[expect(dead_code, reason = "legacy entrypoint retained during v2 migration")]
 async fn run_async() -> loadtest::Result<()> {
     let args = parse().await?;
     let mut term = Term::stdout();
@@ -131,6 +132,10 @@ async fn run_async() -> loadtest::Result<()> {
     write_run_report(args, result).await
 }
 
+#[expect(
+    dead_code,
+    reason = "legacy worker orchestration retained during v2 migration"
+)]
 async fn run_loadtest(args: loadtest::Args) -> loadtest::Result<loadtest::RunResult> {
     let workers = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
@@ -171,6 +176,10 @@ async fn run_loadtest(args: loadtest::Args) -> loadtest::Result<loadtest::RunRes
     Ok(result)
 }
 
+#[expect(
+    dead_code,
+    reason = "legacy CPU pinning helper retained during v2 migration"
+)]
 fn pin_current_thread(core: usize) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {

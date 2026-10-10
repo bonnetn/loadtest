@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    cell::RefCell,
     future::Future,
     pin::Pin,
     rc::Rc,
@@ -19,7 +18,7 @@ use futures::{
     pin_mut, select,
     stream::{FuturesUnordered, StreamExt as _},
 };
-use rand::{SeedableRng, rngs::SmallRng};
+use rand::{RngCore as _, SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_secs(1);
@@ -43,7 +42,7 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let random = Rc::new(RefCell::new(SmallRng::from_os_rng()));
+        let mut random = SmallRng::from_os_rng();
         let in_flight = Rc::new(Cell::new(0));
         let scheduled = Arc::clone(&self.scheduled);
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
@@ -61,7 +60,7 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &random,
+                            &mut random,
                             &in_flight,
                             &scheduled,
                         ) {
@@ -77,7 +76,7 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &random,
+                            &mut random,
                             &in_flight,
                             &scheduled,
                         ) {
@@ -99,7 +98,7 @@ fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
     tasks: &mut FuturesUnordered<WorkerTask>,
     abort_handles: &mut Vec<AbortHandle>,
-    random: &Rc<RefCell<SmallRng>>,
+    random: &mut SmallRng,
     in_flight: &Rc<Cell<usize>>,
     scheduled: &Arc<AtomicU64>,
 ) -> bool {
@@ -115,7 +114,7 @@ fn handle_request(
         } => {
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             abort_handles.push(abort_handle);
-            let task_random = Rc::clone(random);
+            let task_random = SmallRng::seed_from_u64(random.next_u64());
             let task_in_flight = Rc::clone(in_flight);
             let task_scheduled = Arc::clone(scheduled);
             tasks.push(Box::pin(async move {
@@ -157,7 +156,7 @@ async fn send_traffic(
     arrival_distribution: Exp<f64>,
     start_instant: Instant,
     end_instant: Instant,
-    random: Rc<RefCell<SmallRng>>,
+    mut random: SmallRng,
     in_flight: Rc<Cell<usize>>,
     scheduled: Arc<AtomicU64>,
 ) -> miette::Result<()> {
@@ -177,7 +176,7 @@ async fn send_traffic(
             break;
         }
 
-        let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut *random.borrow_mut()));
+        let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
         let next_arrival = now.checked_add(delay).unwrap_or(end_instant);
         if next_arrival >= end_instant {
             compio::time::sleep_until(end_instant).await;

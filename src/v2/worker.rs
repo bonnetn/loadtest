@@ -1,7 +1,8 @@
 use async_channel::{Receiver, Sender};
+use futures::channel::oneshot;
 
 pub struct Worker {
-    receiver: Receiver<WorkerCommand>,
+    receiver: Receiver<WorkerRequest>,
 }
 
 impl Worker {
@@ -11,7 +12,11 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        while self.receiver.recv().await.is_ok() {}
+        while let Ok(request) = self.receiver.recv().await {
+            let WorkerRequest { command, response } = request;
+            let _ = command;
+            let _ = response.send(());
+        }
         Ok(())
     }
 }
@@ -19,16 +24,30 @@ impl Worker {
 #[derive(Debug)]
 pub struct WorkerCommand;
 
+#[derive(Debug)]
+struct WorkerRequest {
+    command: WorkerCommand,
+    response: oneshot::Sender<()>,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkerHandle {
-    sender: Sender<WorkerCommand>,
+    sender: Sender<WorkerRequest>,
 }
 
 impl WorkerHandle {
-    pub async fn send(
-        &self,
-        command: WorkerCommand,
-    ) -> Result<(), async_channel::SendError<WorkerCommand>> {
-        self.sender.send(command).await
+    pub async fn send(&self, command: WorkerCommand) -> miette::Result<()> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender
+            .send(WorkerRequest {
+                command,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| miette::miette!("worker is no longer available"))?;
+        response_receiver
+            .await
+            .map_err(|_| miette::miette!("worker dropped its response"))?;
+        Ok(())
     }
 }

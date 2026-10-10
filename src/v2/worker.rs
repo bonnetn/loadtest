@@ -18,12 +18,8 @@ impl Worker {
         while let Ok(request) = self.receiver.recv().await {
             let WorkerRequest { command, response } = request;
             match command {
-                WorkerCommand::SendTraffic {
-                    throughput,
-                    start_instant,
-                    end_instant,
-                } => {
-                    let _ = (throughput, start_instant, end_instant);
+                WorkerCommand::SendTraffic { end_instant, .. } => {
+                    compio::time::sleep_until(end_instant).await;
                 }
             }
             let _ = response.send(());

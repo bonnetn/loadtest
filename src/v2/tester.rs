@@ -20,9 +20,7 @@ impl Tester {
             let thread = std::thread::Builder::new()
                 .name(format!("worker-{id}"))
                 .spawn(move || -> miette::Result<()> {
-                    pin_current_thread(id)
-                        .into_diagnostic()
-                        .wrap_err_with(|| format!("failed to pin worker thread {id}"))?;
+                    pin_current_thread(id);
                     let runtime = compio::runtime::Runtime::builder()
                         .build()
                         .into_diagnostic()
@@ -45,17 +43,19 @@ impl Tester {
     }
 }
 
-fn pin_current_thread(core: usize) -> std::io::Result<()> {
+fn pin_current_thread(core: usize) {
     #[cfg(target_os = "linux")]
     {
         let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
         unsafe {
             libc::CPU_ZERO(&mut set);
             libc::CPU_SET(core, &mut set);
-            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            assert_eq!(
+                libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set),
+                0,
+                "failed to pin worker thread {core}: {}",
+                std::io::Error::last_os_error()
+            );
         }
     }
-    Ok(())
 }

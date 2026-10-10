@@ -4,6 +4,10 @@ use std::{
     future::Future,
     pin::Pin,
     rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,18 +27,25 @@ const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Worker {
     receiver: Receiver<WorkerRequest>,
+    scheduled: Arc<AtomicU64>,
 }
 
 impl Worker {
     pub fn new() -> (Self, WorkerHandle) {
         let (sender, receiver) = async_channel::unbounded();
-        (Self { receiver }, WorkerHandle { sender })
+        (
+            Self {
+                receiver,
+                scheduled: Arc::new(AtomicU64::new(0)),
+            },
+            WorkerHandle { sender },
+        )
     }
 
     pub async fn run(self) -> miette::Result<()> {
         let random = Rc::new(RefCell::new(SmallRng::from_os_rng()));
         let in_flight = Rc::new(Cell::new(0));
-        let scheduled = Rc::new(Cell::new(0));
+        let scheduled = Arc::clone(&self.scheduled);
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
         let mut tasks: FuturesUnordered<WorkerTask> = FuturesUnordered::new();
         let mut abort_handles = Vec::new();
@@ -90,7 +101,7 @@ fn handle_request(
     abort_handles: &mut Vec<AbortHandle>,
     random: &Rc<RefCell<SmallRng>>,
     in_flight: &Rc<Cell<usize>>,
-    scheduled: &Rc<Cell<u64>>,
+    scheduled: &Arc<AtomicU64>,
 ) -> bool {
     let Ok(WorkerRequest { command, response }) = request else {
         return false;
@@ -106,7 +117,7 @@ fn handle_request(
             abort_handles.push(abort_handle);
             let task_random = Rc::clone(random);
             let task_in_flight = Rc::clone(in_flight);
-            let task_scheduled = Rc::clone(scheduled);
+            let task_scheduled = Arc::clone(scheduled);
             tasks.push(Box::pin(async move {
                 let result = Abortable::new(
                     send_traffic(
@@ -148,7 +159,7 @@ async fn send_traffic(
     end_instant: Instant,
     random: Rc<RefCell<SmallRng>>,
     in_flight: Rc<Cell<usize>>,
-    scheduled: Rc<Cell<u64>>,
+    scheduled: Arc<AtomicU64>,
 ) -> miette::Result<()> {
     if end_instant < start_instant {
         return Err(miette::miette!(
@@ -174,7 +185,7 @@ async fn send_traffic(
         }
 
         compio::time::sleep_until(next_arrival).await;
-        scheduled.set(scheduled.get() + 1);
+        scheduled.fetch_add(1, Ordering::Relaxed);
         in_flight.set(in_flight.get() + 1);
         let task_in_flight = Rc::clone(&in_flight);
         compio::runtime::spawn(async move {
@@ -185,43 +196,6 @@ async fn send_traffic(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "run explicitly when comparing scheduler performance"]
-    fn scheduler_performance_smoke_test() {
-        let runtime = compio::runtime::Runtime::builder()
-            .build()
-            .expect("failed to build compio runtime");
-        let start = Instant::now();
-        let end = start + Duration::from_secs(2);
-        let scheduled = Rc::new(Cell::new(0));
-        let in_flight = Rc::new(Cell::new(0));
-        let random = Rc::new(RefCell::new(SmallRng::seed_from_u64(0)));
-        let distribution = Exp::new(10_000.0).expect("valid arrival rate");
-
-        runtime
-            .block_on(send_traffic(
-                distribution,
-                start,
-                end,
-                random,
-                in_flight,
-                Rc::clone(&scheduled),
-            ))
-            .expect("scheduler failed");
-
-        let elapsed = end.duration_since(start).as_secs_f64();
-        let requests = scheduled.get();
-        println!(
-            "scheduled {requests} requests in {elapsed:.3}s ({:.0} requests/s)",
-            requests as f64 / elapsed
-        );
-    }
 }
 
 #[derive(Debug)]

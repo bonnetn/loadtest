@@ -109,3 +109,19 @@ fn pin_current_thread(core: usize) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "run explicitly when profiling the full v2 entrypoint"]
+    fn full_tester_performance_smoke_test() {
+        let start = Instant::now();
+        Tester::new().run().expect("full tester run failed");
+        println!(
+            "full Tester::new().run() workload completed in {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
+    }
+}

@@ -107,14 +107,16 @@ use std::io::Write as _;
 
 use console::{Term, style};
 
-use loadtest::{format_args, parse, run};
+use loadtest::{format_args, parse, worker_manager, write_run_report};
 
 fn main() -> miette::Result<()> {
-    run_async()?;
-    Ok(())
+    pin_current_thread(0).map_err(|error| miette::miette!("failed to pin main thread: {error}"))?;
+    let runtime = compio::runtime::Runtime::builder()
+        .build()
+        .map_err(|error| miette::miette!("failed to build Compio runtime: {error}"))?;
+    runtime.block_on(run_async())
 }
 
-#[tokio::main]
 async fn run_async() -> loadtest::Result<()> {
     let args = parse().await?;
     let mut term = Term::stdout();
@@ -126,5 +128,61 @@ async fn run_async() -> loadtest::Result<()> {
     if args.dry_run {
         return Ok(());
     }
-    run(args).await
+    let result = run_loadtest(args.clone()).await?;
+    write_run_report(args, result).await
+}
+
+async fn run_loadtest(args: loadtest::Args) -> loadtest::Result<loadtest::RunResult> {
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let mut senders = Vec::with_capacity(workers);
+    let mut receivers = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let (sender, receiver) = async_channel::unbounded();
+        senders.push(sender);
+        receivers.push(receiver);
+    }
+    let mut threads = Vec::with_capacity(workers);
+    let main_receiver = receivers.remove(0);
+    let main_executor = compio::runtime::spawn(worker_manager::run_executor_on_current_runtime(
+        0,
+        args.clone(),
+        main_receiver,
+    ));
+
+    for (id, receiver) in receivers.into_iter().enumerate() {
+        let id = id + 1;
+        let args = args.clone();
+        threads.push(std::thread::spawn(move || {
+            pin_current_thread(id)?;
+            worker_manager::run_executor(id, &args, receiver)
+        }));
+    }
+
+    let result = compio::runtime::spawn(worker_manager::driver_task(args, senders))
+        .await
+        .map_err(std::io::Error::from)??;
+    main_executor.await.map_err(std::io::Error::from)??;
+    for thread in threads {
+        thread
+            .join()
+            .map_err(|_| loadtest::AppError::WorkerThreadPanic)??;
+    }
+    Ok(result)
+}
+
+fn pin_current_thread(core: usize) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+        unsafe {
+            libc::CPU_ZERO(&mut set);
+            libc::CPU_SET(core, &mut set);
+            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
 }

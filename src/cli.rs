@@ -4,13 +4,10 @@ use bytes::Bytes;
 use clap::Parser;
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::value_parser;
-use reqwest::Identity;
-use reqwest::tls::Certificate;
+use compio::fs;
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::time::Duration;
-use tokio::fs::{self, File};
-use tokio::io::AsyncReadExt as _;
 
 use crate::error::{AppError, Result};
 
@@ -48,9 +45,9 @@ pub struct Args {
     pub output: PathBuf,
     pub protocol: HttpProtocol,
     pub payload: Option<Payload>,
-    pub identity: Option<Identity>,
-    /// CA certificate(s) loaded from --cacert for use with `tls_certs_only`.
-    pub root_certificates: Option<Vec<Certificate>>,
+    pub identity: Option<Bytes>,
+    /// CA certificate data loaded from --cacert.
+    pub root_certificates: Option<Vec<Bytes>>,
     /// If true, print config and exit without making requests.
     pub dry_run: bool,
     /// Path passed to -T/--upload-file (for display when `dry_run` and file not read).
@@ -256,20 +253,13 @@ async fn resolve_payload_and_path(cli: &Cli) -> Result<(Option<Payload>, Option<
     } else {
         let payload = match (cli.upload_file.as_ref(), cli.data.as_ref()) {
             (Some(path), None) => {
-                let mut file =
-                    File::open(path)
+                let content =
+                    fs::read(path)
                         .await
-                        .map_err(|source| AppError::FailedToOpenFile {
+                        .map_err(|source| AppError::FailedToReadFile {
                             path: path.clone(),
                             source,
                         })?;
-                let mut content = Vec::new();
-                file.read_to_end(&mut content).await.map_err(|source| {
-                    AppError::FailedToReadFile {
-                        path: path.clone(),
-                        source,
-                    }
-                })?;
                 Some(Payload::File(Bytes::from(content)))
             }
             (None, Some(data)) => Some(Payload::Data(Bytes::from(data.clone()))),
@@ -302,7 +292,7 @@ fn resolve_request(
     }
 }
 
-async fn resolve_identity(cli: &Cli) -> Result<Option<Identity>> {
+async fn resolve_identity(cli: &Cli) -> Result<Option<Bytes>> {
     if cli.dry_run {
         return Ok(None);
     }
@@ -320,10 +310,7 @@ async fn resolve_identity(cli: &Cli) -> Result<Option<Identity>> {
                     path: key.clone(),
                     source,
                 })?;
-            let concat_data = [cert_data, key_data].concat();
-            let identity = Identity::from_pem(&concat_data)
-                .map_err(|source| AppError::FailedToParseIdentityPemFile { source })?;
-            Ok(Some(identity))
+            Ok(Some(Bytes::from([cert_data, key_data].concat())))
         }
         (None, None) => Ok(None),
         (Some(_), None) => Err(AppError::KeyMustBeProvidedWithCert),
@@ -331,7 +318,7 @@ async fn resolve_identity(cli: &Cli) -> Result<Option<Identity>> {
     }
 }
 
-async fn resolve_root_certificates(cli: &Cli) -> Result<Option<Vec<Certificate>>> {
+async fn resolve_root_certificates(cli: &Cli) -> Result<Option<Vec<Bytes>>> {
     if cli.dry_run {
         return Ok(None);
     }
@@ -342,9 +329,7 @@ async fn resolve_root_certificates(cli: &Cli) -> Result<Option<Vec<Certificate>>
                 path: path.clone(),
                 source,
             })?;
-        let certs = Certificate::from_pem_bundle(&data)
-            .map_err(|source| AppError::FailedToParseCacertPemFile { source })?;
-        Ok(Some(certs))
+        Ok(Some(vec![Bytes::from(data)]))
     } else {
         Ok(None)
     }
@@ -394,7 +379,7 @@ mod tests {
     macro_rules! parse_from_ok_tests {
         ($($name:ident: $argv:expr => |$args:ident| $body:block),* $(,)?) => {
             $(
-                #[tokio::test]
+                #[compio::test]
                 async fn $name() {
                     let $args = parse_from(argv($argv)).await.unwrap();
                     $body
@@ -407,7 +392,7 @@ mod tests {
     macro_rules! parse_from_err_tests {
         ($($name:ident: $argv:expr => $err_pat:pat),* $(,)?) => {
             $(
-                #[tokio::test]
+                #[compio::test]
                 async fn $name() {
                     let err = parse_from(argv($argv)).await.unwrap_err();
                     assert!(matches!(err, $err_pat));
@@ -583,7 +568,7 @@ mod tests {
     }
 
     /// Fails to compile if a new field is added to `Args` without updating this test (and the coverage matrix).
-    #[tokio::test]
+    #[compio::test]
     async fn args_exhaustive_destructure() {
         let args = parse_from(argv(&["https://example.com/", "--http1.1"]))
             .await
@@ -630,12 +615,13 @@ mod tests {
         assert!(upload_file_path.is_none());
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn parse_upload_file_payload() {
         let dir = std::env::temp_dir();
         let path = dir.join("loadtest-upload-file-payload-test.bin");
         let content = b"file body content";
-        tokio::fs::write(&path, content).await.unwrap();
+        let compio::BufResult(result, _) = fs::write(&path, content.to_vec()).await;
+        result.unwrap();
         let path_str = path.to_string_lossy();
         let args = parse_from(argv(&[
             "https://example.com/",
@@ -651,6 +637,6 @@ mod tests {
             Payload::Data(_) => panic!("expected File payload"),
         }
         assert_eq!(args.request, http::Method::PUT);
-        let _ = tokio::fs::remove_file(&path).await;
+        let _ = std::fs::remove_file(&path);
     }
 }

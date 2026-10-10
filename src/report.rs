@@ -1,4 +1,4 @@
-//! Run report generation (CDF, protobuf encoding). Caller writes the returned bytes (e.g. with `tokio::fs::write`).
+//! Run report generation (CDF, protobuf encoding). Caller writes the returned bytes asynchronously.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -18,7 +18,7 @@ const RESOLUTION: u64 = 16;
 const STEPS: u64 = 4;
 
 /// Builds the run report and returns the serialized protobuf. Prints CDFs to stdout.
-/// Caller is responsible for writing the bytes (e.g. `tokio::fs::write(path, &bytes).await`).
+/// Caller is responsible for writing the bytes asynchronously.
 pub(crate) fn build_run_report(args: &Args, result: &RunResult) -> Vec<u8> {
     let cdf_success = cdf::calculate_cdf(
         START_PERCENTILE,

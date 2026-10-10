@@ -40,24 +40,17 @@ pub enum AppError {
         source: url::ParseError,
     },
 
-    #[error("Join error")]
-    #[diagnostic(code(loadtest::join_error))]
-    JoinError {
-        #[from]
-        source: tokio::task::JoinError,
-    },
-
     #[error("Failed to build client")]
     #[diagnostic(code(loadtest::failed_to_build_client))]
-    FailedToBuildClient { source: reqwest::Error },
+    FailedToBuildClient { source: cyper::Error },
 
     #[error("Failed to send request")]
     #[diagnostic(code(loadtest::failed_to_send_request))]
-    FailedToSendRequest { source: reqwest::Error },
+    FailedToSendRequest { source: cyper::Error },
 
     #[error("Failed to get response text")]
     #[diagnostic(code(loadtest::failed_to_get_response_text))]
-    FailedToGetResponseChunk { source: reqwest::Error },
+    FailedToGetResponseChunk { source: cyper::Error },
 
     #[error("I/O error: {0}")]
     #[diagnostic(code(loadtest::io))]
@@ -101,13 +94,9 @@ pub enum AppError {
     #[diagnostic(code(loadtest::key_must_be_provided_with_cert))]
     KeyMustBeProvidedWithCert,
 
-    #[error("Failed to parse identity PEM file")]
-    #[diagnostic(code(loadtest::failed_to_parse_identity_pem_file))]
-    FailedToParseIdentityPemFile { source: reqwest::Error },
-
-    #[error("Failed to parse CA certificate PEM file")]
-    #[diagnostic(code(loadtest::failed_to_parse_cacert_pem_file))]
-    FailedToParseCacertPemFile { source: reqwest::Error },
+    #[error("Worker thread panicked")]
+    #[diagnostic(code(loadtest::worker_thread_panic))]
+    WorkerThreadPanic,
 
     /// Invalid or missing CLI arguments.
     #[error(transparent)]

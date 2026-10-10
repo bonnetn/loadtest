@@ -105,6 +105,9 @@
     clippy::wildcard_enum_match_arm
 )]
 
+#[cfg(not(target_os = "linux"))]
+compile_error!("loadtest requires Linux because it uses Compio's io-uring driver exclusively");
+
 mod cdf;
 mod cli;
 mod display;
@@ -112,8 +115,9 @@ mod error;
 mod proto;
 mod report;
 mod stats;
+pub mod v2;
 mod work_unit;
-mod worker_manager;
+pub mod worker_manager;
 
 #[cfg(test)]
 mod report_fixtures;
@@ -121,27 +125,13 @@ mod report_fixtures;
 pub use cli::{Args, HttpProtocol, Payload, parse};
 pub use display::format_args;
 pub use error::{AppError, Result};
+pub use worker_manager::{Order, RunResult};
 
-/// Entry point: run load test (spawn workers, write report). Call after parsing CLI.
-/// If `args.dry_run` is true, the caller should only print [`format_args`] and return.
-///
-/// # Errors
-///
-/// Returns an error if spawning workers, building the report, or writing the output file fails.
-#[inline]
-pub async fn run(args: Args) -> Result<()> {
-    if args.dry_run {
-        return Ok(());
-    }
-    let result = worker_manager::spawn_workers(&args).await?;
-    let args_clone = args.clone();
-    let (bytes, path) = tokio::task::spawn_blocking(move || {
-        let bytes = report::build_run_report(&args_clone, &result);
-        Ok::<_, crate::AppError>((bytes, args_clone.output))
-    })
-    .await
-    .map_err(AppError::from)??;
-    tokio::fs::write(&path, &bytes).await?;
+pub async fn write_run_report(args: Args, result: RunResult) -> Result<()> {
+    let bytes = report::build_run_report(&args, &result);
+    let path = args.output;
+    let compio::BufResult(write_result, _) = compio::fs::write(&path, bytes).await;
+    write_result?;
     println!("Wrote run report to {}", path.display());
     Ok(())
 }

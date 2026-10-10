@@ -1,84 +1,46 @@
 use futures::StreamExt as _;
+use std::time::{Duration, Instant};
+
+use cyper::Client;
 
 use crate::{
     cli::{Args, HttpProtocol, Payload},
     error::{AppError, Result},
 };
-use std::{
-    future::Future,
-    time::{Duration, Instant},
-};
 
 pub trait WorkUnit {
-    fn execute(&self) -> impl Future<Output = Result<ExecutionResult>> + Send + '_;
+    fn execute(&self) -> impl Future<Output = Result<ExecutionResult>> + '_;
 }
 
+#[derive(Clone)]
 pub struct RequestWorkUnit {
     args: Args,
-    client: reqwest::Client,
+    client: Client,
 }
 
 impl WorkUnit for RequestWorkUnit {
-    fn execute(&self) -> impl Future<Output = Result<ExecutionResult>> + Send + '_ {
+    fn execute(&self) -> impl Future<Output = Result<ExecutionResult>> + '_ {
         self.do_execute()
     }
 }
 
 impl RequestWorkUnit {
     pub fn new(args: &Args) -> Result<Self> {
-        let mut builder = reqwest::Client::builder();
-        if let Some(t) = args.max_time {
-            builder = builder.timeout(t);
-        }
-        if let Some(t) = args.connect_timeout {
-            builder = builder.connect_timeout(t);
-        }
+        let mut builder = Client::builder()
+            .default_headers(args.header.clone())
+            .use_rustls_default()
+            .danger_accept_invalid_certs(args.insecure);
 
-        match args.protocol {
-            HttpProtocol::Http1_1 => {
-                builder = builder.http1_only();
-            }
-            HttpProtocol::Http2 => {
-                builder = builder.http2_prior_knowledge();
-            }
+        if matches!(args.protocol, HttpProtocol::Http2) {
+            builder = builder.http2_prior_knowledge();
         }
 
-        if args.insecure {
-            builder = builder.tls_danger_accept_invalid_certs(true);
-            builder = builder.tls_danger_accept_invalid_hostnames(true);
-        }
-
-        builder = builder.default_headers(args.header.clone());
-
-        if args.location {
-            builder = builder.redirect(reqwest::redirect::Policy::limited(50));
+        builder = if args.location {
+            builder.redirect(cyper::redirect::Policy::limited(50))
         } else {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
+            builder.redirect(cyper::redirect::Policy::none())
+        };
 
-        if let Some(t) = args.max_time {
-            builder = builder.timeout(t);
-        }
-
-        if let Some(ref identity) = args.identity {
-            builder = builder.identity(identity.clone());
-        }
-
-        if let Some(ref certs) = args.root_certificates {
-            builder = builder.tls_certs_only(certs.clone());
-        }
-
-        // Disable auto decompression of response bodies.
-        builder = builder.no_brotli();
-        builder = builder.no_deflate();
-        builder = builder.no_gzip();
-        builder = builder.no_zstd();
-
-        // Use rustls
-        builder = builder.tls_backend_rustls();
-
-        // TODO:
-        // builder = builder.http2_adaptive_window(true);
         let client = builder
             .build()
             .map_err(|source| AppError::FailedToBuildClient { source })?;
@@ -91,49 +53,40 @@ impl RequestWorkUnit {
 
     async fn do_execute(&self) -> Result<ExecutionResult> {
         let start = Instant::now();
-        let outcome = self.do_execute_inner().await?;
-        let duration = start.elapsed();
-        Ok(ExecutionResult { outcome, duration })
+        let future = self.do_execute_inner();
+        let outcome = if let Some(timeout) = self.args.max_time {
+            match compio::time::timeout(timeout, future).await {
+                Ok(result) => result?,
+                Err(_) => HttpRequestOutcome::Timeout,
+            }
+        } else {
+            future.await?
+        };
+        Ok(ExecutionResult {
+            outcome,
+            duration: start.elapsed(),
+        })
     }
 
     async fn do_execute_inner(&self) -> Result<HttpRequestOutcome> {
-        let url = self.args.url.clone();
-        let method = self.args.request.clone();
-
-        let mut request_builder = self.client.request(method, url);
-        match self.args.payload {
-            Some(Payload::Data(ref data)) => {
-                request_builder = request_builder.body(data.clone());
-            }
-            Some(Payload::File(ref file)) => {
-                request_builder = request_builder.body(file.clone());
-            }
-            None => {}
+        let mut request = self
+            .client
+            .request(self.args.request.clone(), self.args.url.clone())
+            .map_err(|source| AppError::FailedToSendRequest { source })?;
+        if let Some(payload) = &self.args.payload {
+            request = match payload {
+                Payload::Data(data) | Payload::File(data) => request.body(data.clone()),
+            };
         }
 
-        let result = request_builder.send().await;
-
-        if let Err(ref source) = result
-            && source.is_timeout()
-        {
-            return Ok(HttpRequestOutcome::Timeout);
-        }
-
-        let response = result.map_err(|source| AppError::FailedToSendRequest { source })?;
-
+        let response = request
+            .send()
+            .await
+            .map_err(|source| AppError::FailedToSendRequest { source })?;
         let status = response.status();
-        let _headers = response.headers().clone();
-
         let mut bytes_stream = response.bytes_stream();
         while let Some(result) = bytes_stream.next().await {
-            if let Err(ref source) = result
-                && source.is_timeout()
-            {
-                return Ok(HttpRequestOutcome::Timeout);
-            }
-
-            let _chunk = result.map_err(|source| AppError::FailedToGetResponseChunk { source })?;
-            // println!("chunk size : {:?}", chunk.len());
+            result.map_err(|source| AppError::FailedToGetResponseChunk { source })?;
         }
 
         if status.is_informational() {

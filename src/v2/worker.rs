@@ -1,11 +1,16 @@
-use std::time::{Duration, Instant};
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 use async_channel::{Receiver, Sender};
 use futures::channel::oneshot;
-use rand::rng;
+use rand::{Rng, rng};
 use rand_distr::{Distribution, Exp};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
+
+const SIMULATED_WORK_DURATION: Duration = Duration::from_millis(1);
 
 pub struct Worker {
     receiver: Receiver<WorkerRequest>,
@@ -18,16 +23,17 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
+        let mut random = rng();
         while let Ok(request) = self.receiver.recv().await {
             let WorkerRequest { command, response } = request;
-            match command {
+            let result = match command {
                 WorkerCommand::SendTraffic {
                     throughput,
                     start_instant,
                     end_instant,
-                } => send_traffic(throughput, start_instant, end_instant).await?,
-            }
-            let _ = response.send(());
+                } => send_traffic(throughput, start_instant, end_instant, &mut random).await,
+            };
+            let _ = response.send(result);
         }
         Ok(())
     }
@@ -37,6 +43,7 @@ async fn send_traffic(
     throughput: Decimal,
     start_instant: Instant,
     end_instant: Instant,
+    random: &mut impl Rng,
 ) -> miette::Result<()> {
     if throughput <= Decimal::ZERO {
         return Err(miette::miette!("throughput must be greater than zero"));
@@ -52,9 +59,6 @@ async fn send_traffic(
         .ok_or_else(|| miette::miette!("throughput cannot be represented as f64"))?;
     let distribution = Exp::new(rate)
         .map_err(|error| miette::miette!("failed to create Poisson distribution: {error}"))?;
-    let mut random = rng();
-    let mut tasks = Vec::new();
-
     if Instant::now() < start_instant {
         compio::time::sleep_until(start_instant).await;
     }
@@ -65,7 +69,7 @@ async fn send_traffic(
             break;
         }
 
-        let delay = Duration::from_secs_f64(distribution.sample(&mut random));
+        let delay = Duration::from_secs_f64(distribution.sample(random));
         let next_arrival = now.checked_add(delay).unwrap_or(end_instant);
         if next_arrival >= end_instant {
             compio::time::sleep_until(end_instant).await;
@@ -73,11 +77,12 @@ async fn send_traffic(
         }
 
         compio::time::sleep_until(next_arrival).await;
-        tasks.push(compio::runtime::spawn(async {}));
-    }
-
-    for task in tasks {
-        let _ = task.await;
+        compio::runtime::spawn(async {
+            let work = Cell::new(0);
+            compio::time::sleep(SIMULATED_WORK_DURATION).await;
+            work.set(work.get() + 1);
+        })
+        .detach();
     }
 
     Ok(())
@@ -95,7 +100,7 @@ pub enum WorkerCommand {
 #[derive(Debug)]
 struct WorkerRequest {
     command: WorkerCommand,
-    response: oneshot::Sender<()>,
+    response: oneshot::Sender<miette::Result<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +120,6 @@ impl WorkerHandle {
             .map_err(|_| miette::miette!("worker is no longer available"))?;
         response_receiver
             .await
-            .map_err(|_| miette::miette!("worker dropped its response"))?;
-        Ok(())
+            .map_err(|_| miette::miette!("worker dropped its response"))?
     }
 }

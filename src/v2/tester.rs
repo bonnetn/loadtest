@@ -11,7 +11,14 @@ impl Tester {
         Self
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub fn run(&self) -> miette::Result<()> {
+        let runtime = compio::runtime::Runtime::builder()
+            .build()
+            .map_err(|error| miette::miette!("failed to build Compio runtime: {error}"))?;
+        Ok(runtime.block_on(self.run_async())?)
+    }
+
+    async fn run_async(&self) -> Result<()> {
         pin_current_thread(0)?;
 
         let args = parse().await?;

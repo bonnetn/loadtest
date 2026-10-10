@@ -110,10 +110,7 @@ use console::{Term, style};
 use loadtest::{format_args, parse, v2::tester::Tester, worker_manager, write_run_report};
 
 fn main() -> miette::Result<()> {
-    let runtime = compio::runtime::Runtime::builder()
-        .build()
-        .map_err(|error| miette::miette!("failed to build Compio runtime: {error}"))?;
-    Ok(runtime.block_on(Tester::new().run())?)
+    Tester::new().run()
 }
 
 #[expect(dead_code, reason = "legacy entrypoint retained during v2 migration")]

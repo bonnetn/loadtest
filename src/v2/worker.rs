@@ -29,6 +29,10 @@ struct WorkerMetrics {
     slots_traversed: Cell<u64>,
     max_slots_per_tick: Cell<usize>,
     requests_scheduled: Cell<u64>,
+    max_requests_per_tick: Cell<u64>,
+    max_catch_up_duration_us: Cell<u64>,
+    timer_lateness_samples: Cell<u64>,
+    max_timer_lateness_us: Cell<u64>,
     tasks_spawned: Cell<u64>,
     tasks_completed: Cell<u64>,
     in_flight: Cell<usize>,
@@ -131,13 +135,17 @@ fn handle_request(
 
 fn log_metrics(metrics: &Rc<WorkerMetrics>) {
     println!(
-        "worker {} metrics: ticks={} dropped_ticks={} slots={} max_slots_per_tick={} scheduled={} spawned={} completed={} in_flight={} max_in_flight={}",
+        "worker {} metrics: ticks={} dropped_ticks={} slots={} max_slots_per_tick={} scheduled={} max_requests_per_tick={} max_catch_up_us={} lateness_samples={} max_lateness_us={} spawned={} completed={} in_flight={} max_in_flight={}",
         std::thread::current().name().unwrap_or("unnamed"),
         metrics.timer_ticks.get(),
         metrics.timer_ticks_dropped.get(),
         metrics.slots_traversed.get(),
         metrics.max_slots_per_tick.get(),
         metrics.requests_scheduled.get(),
+        metrics.max_requests_per_tick.get(),
+        metrics.max_catch_up_duration_us.get(),
+        metrics.timer_lateness_samples.get(),
+        metrics.max_timer_lateness_us.get(),
         metrics.tasks_spawned.get(),
         metrics.tasks_completed.get(),
         metrics.in_flight.get(),
@@ -170,6 +178,15 @@ async fn send_traffic(
         let current_slot = (now.duration_since(start_instant).as_nanos()
             / ARRIVAL_TIMER_PERIOD.as_nanos()) as usize;
         metrics.timer_ticks.set(metrics.timer_ticks.get() + 1);
+        if metrics.timer_ticks.get() % 100 == 0 {
+            let lateness_us = Instant::now().saturating_duration_since(now).as_micros() as u64;
+            metrics
+                .timer_lateness_samples
+                .set(metrics.timer_lateness_samples.get() + 1);
+            metrics
+                .max_timer_lateness_us
+                .set(metrics.max_timer_lateness_us.get().max(lateness_us));
+        }
         if let Some(previous_tick_slot) = previous_tick_slot {
             let dropped_ticks = current_slot.saturating_sub(previous_tick_slot + 1);
             metrics
@@ -185,8 +202,11 @@ async fn send_traffic(
         metrics
             .max_slots_per_tick
             .set(metrics.max_slots_per_tick.get().max(slots_to_traverse));
+        let catch_up_started_at = (slots_to_traverse > 1).then(Instant::now);
+        let mut requests_this_tick = 0;
         while next_slot <= current_slot && next_slot < traffic_slots.len() {
             let request_count = traffic_slots[next_slot] as u64;
+            requests_this_tick += request_count;
             metrics
                 .requests_scheduled
                 .set(metrics.requests_scheduled.get() + request_count);
@@ -208,6 +228,17 @@ async fn send_traffic(
                 .detach();
             }
             next_slot += 1;
+        }
+        metrics
+            .max_requests_per_tick
+            .set(metrics.max_requests_per_tick.get().max(requests_this_tick));
+        if let Some(started_at) = catch_up_started_at {
+            let duration_us = Instant::now()
+                .saturating_duration_since(started_at)
+                .as_micros() as u64;
+            metrics
+                .max_catch_up_duration_us
+                .set(metrics.max_catch_up_duration_us.get().max(duration_us));
         }
     }
 

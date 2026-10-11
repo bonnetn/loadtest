@@ -18,6 +18,7 @@ use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
 
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
+const ARRIVAL_TIMER_PERIOD: Duration = Duration::from_millis(1);
 
 pub struct Worker {
     receiver: Receiver<WorkerRequest>,
@@ -147,31 +148,32 @@ async fn send_traffic(
         ));
     }
 
-    if Instant::now() < start_instant {
-        compio::time::sleep_until(start_instant).await;
-    }
+    let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
+    let mut next_arrival = start_instant;
 
     loop {
+        arrival_timer.tick().await;
         let now = Instant::now();
         if now >= end_instant {
             break;
         }
 
-        let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
-        let next_arrival = now.checked_add(delay).unwrap_or(end_instant);
-        if next_arrival >= end_instant {
-            compio::time::sleep_until(end_instant).await;
-            break;
-        }
+        while next_arrival <= now {
+            if next_arrival >= end_instant {
+                return Ok(());
+            }
 
-        compio::time::sleep_until(next_arrival).await;
-        in_flight.set(in_flight.get() + 1);
-        let task_in_flight = Rc::clone(&in_flight);
-        compio::runtime::spawn(async move {
-            std::hint::black_box(());
-            task_in_flight.set(task_in_flight.get() - 1);
-        })
-        .detach();
+            in_flight.set(in_flight.get() + 1);
+            let task_in_flight = Rc::clone(&in_flight);
+            compio::runtime::spawn(async move {
+                std::hint::black_box(());
+                task_in_flight.set(task_in_flight.get() - 1);
+            })
+            .detach();
+
+            let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
+            next_arrival = next_arrival.checked_add(delay).unwrap_or(end_instant);
+        }
     }
 
     Ok(())

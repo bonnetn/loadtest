@@ -6,7 +6,7 @@ use rand_distr::Exp;
 
 use super::{controller::Controller, worker::Worker};
 
-const TOTAL_THROUGHPUT: f64 = 10_000.0;
+const TOTAL_THROUGHPUT: f64 = 100_000.0;
 
 pub struct Tester;
 

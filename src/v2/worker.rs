@@ -40,6 +40,20 @@ struct ActiveTraffic {
     abort_handle: AbortHandle,
     task: compio::runtime::JoinHandle<miette::Result<()>>,
     response: oneshot::Sender<miette::Result<()>>,
+    cancel_responses: Vec<oneshot::Sender<miette::Result<()>>>,
+    cancelled: Rc<Cell<bool>>,
+}
+
+enum RequestAction {
+    None,
+    Start(ActiveTraffic),
+    Cancel(oneshot::Sender<miette::Result<()>>),
+}
+
+enum ActiveEvent {
+    Request(miette::Result<RequestAction>),
+    Traffic(Result<miette::Result<()>, compio::runtime::JoinError>),
+    Tick,
 }
 
 impl Worker {
@@ -69,8 +83,7 @@ impl Worker {
                             active_traffic.as_ref(),
                             &metrics,
                         ) {
-                            Ok(Some(new_active_traffic)) => active_traffic = Some(new_active_traffic),
-                            Ok(None) => {}
+                            Ok(action) => apply_request_action(action, &mut active_traffic),
                             Err(error) => log_request_error(&error),
                         }
                     }
@@ -84,41 +97,72 @@ impl Worker {
                     .expect("active traffic must exist")
                     .task)
                     .fuse();
-                let traffic_result = select! {
+                let event = select! {
                     request = receive.fuse() => {
                         let Ok(request) = request else {
                             log_metrics(&metrics);
                             return Ok(());
                         };
-                        match handle_request_and_log_error(
+                        ActiveEvent::Request(handle_request_and_log_error(
                             request,
                             active_traffic.as_ref(),
                             &metrics,
-                        ) {
-                            Ok(Some(new_active_traffic)) => active_traffic = Some(new_active_traffic),
-                            Ok(None) => {}
-                            Err(error) => log_request_error(&error),
-                        }
-                        None
+                        ))
                     }
-                    result = active_future => Some(result),
+                    result = active_future => ActiveEvent::Traffic(result),
                     _ = interval.tick().fuse() => {
                         log_metrics(&metrics);
-                        None
+                        ActiveEvent::Tick
                     },
                 };
-                if let Some(task_result) = traffic_result {
-                    let active_traffic = active_traffic
-                        .take()
-                        .expect("active traffic must exist when its task finishes");
-                    let result = task_result
-                        .map_err(|error| miette::miette!("traffic task failed: {error}"))
-                        .and_then(|result| result);
-                    if let Err(error) = send_response(active_traffic.response, result) {
-                        log_request_error(&error);
+                match event {
+                    ActiveEvent::Request(result) => match result {
+                        Ok(action) => apply_request_action(action, &mut active_traffic),
+                        Err(error) => log_request_error(&error),
+                    },
+                    ActiveEvent::Traffic(task_result) => {
+                        finish_active_traffic(&mut active_traffic, task_result);
                     }
+                    ActiveEvent::Tick => {}
                 }
             }
+        }
+    }
+}
+
+fn apply_request_action(action: RequestAction, active_traffic: &mut Option<ActiveTraffic>) {
+    match action {
+        RequestAction::None => {}
+        RequestAction::Start(new_active_traffic) => {
+            debug_assert!(active_traffic.is_none());
+            *active_traffic = Some(new_active_traffic);
+        }
+        RequestAction::Cancel(response) => {
+            active_traffic
+                .as_mut()
+                .expect("cancel action requires active traffic")
+                .cancel_responses
+                .push(response);
+        }
+    }
+}
+
+fn finish_active_traffic(
+    active_traffic: &mut Option<ActiveTraffic>,
+    task_result: Result<miette::Result<()>, compio::runtime::JoinError>,
+) {
+    let active_traffic = active_traffic
+        .take()
+        .expect("active traffic must exist when its task finishes");
+    let result = task_result
+        .map_err(|error| miette::miette!("traffic task failed: {error}"))
+        .and_then(|result| result);
+    if let Err(error) = send_response(active_traffic.response, result) {
+        log_request_error(&error);
+    }
+    for response in active_traffic.cancel_responses {
+        if let Err(error) = send_response(response, Ok(())) {
+            log_request_error(&error);
         }
     }
 }
@@ -127,7 +171,7 @@ fn handle_request_and_log_error(
     request: WorkerRequest,
     active_traffic: Option<&ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> miette::Result<Option<ActiveTraffic>> {
+) -> miette::Result<RequestAction> {
     let result = handle_request(request, active_traffic, metrics);
     if result.is_err() {
         log_metrics(metrics);
@@ -143,7 +187,7 @@ fn handle_request(
     request: WorkerRequest,
     active_traffic: Option<&ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> miette::Result<Option<ActiveTraffic>> {
+) -> miette::Result<RequestAction> {
     let WorkerRequest { command, response } = request;
 
     match command {
@@ -156,31 +200,37 @@ fn handle_request(
                     response,
                     Err(miette::miette!("worker is already running traffic")),
                 )?;
-                return Ok(None);
+                return Ok(RequestAction::None);
             }
 
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
+            let cancelled = Rc::new(Cell::new(false));
             let task_metrics = Rc::clone(metrics);
+            let task_cancelled = Rc::clone(&cancelled);
             let task = compio::runtime::spawn(async move {
                 Abortable::new(
-                    send_traffic(traffic_slots, start_instant, task_metrics),
+                    send_traffic(traffic_slots, start_instant, task_metrics, task_cancelled),
                     abort_registration,
                 )
                 .await
-                .unwrap_or(Ok(()))
+                .unwrap_or_else(|_| Err(miette::miette!("traffic cancelled")))
             });
-            Ok(Some(ActiveTraffic {
+            Ok(RequestAction::Start(ActiveTraffic {
                 abort_handle,
                 task,
                 response,
+                cancel_responses: Vec::new(),
+                cancelled,
             }))
         }
         WorkerCommand::Cancel => {
             if let Some(active_traffic) = active_traffic {
                 active_traffic.abort_handle.abort();
+                active_traffic.cancelled.set(true);
+                return Ok(RequestAction::Cancel(response));
             }
             send_response(response, Ok(()))?;
-            Ok(None)
+            Ok(RequestAction::None)
         }
     }
 }
@@ -218,6 +268,7 @@ async fn send_traffic(
     traffic_slots: Vec<u16>,
     start_instant: Instant,
     metrics: Rc<WorkerMetrics>,
+    cancelled: Rc<Cell<bool>>,
 ) -> miette::Result<()> {
     let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
     let mut next_slot = 0;
@@ -261,6 +312,9 @@ async fn send_traffic(
                 .requests_scheduled
                 .set(metrics.requests_scheduled.get() + request_count);
             for _ in 0..traffic_slots[next_slot] {
+                if cancelled.get() {
+                    return Err(miette::miette!("traffic cancelled"));
+                }
                 let in_flight = metrics.in_flight.get() + 1;
                 metrics.in_flight.set(in_flight);
                 metrics
@@ -268,8 +322,11 @@ async fn send_traffic(
                     .set(metrics.max_in_flight.get().max(in_flight));
                 metrics.tasks_spawned.set(metrics.tasks_spawned.get() + 1);
                 let task_metrics = Rc::clone(&metrics);
+                let task_cancelled = Rc::clone(&cancelled);
                 compio::runtime::spawn(async move {
-                    std::hint::black_box(());
+                    if !task_cancelled.get() {
+                        std::hint::black_box(());
+                    }
                     task_metrics.in_flight.set(task_metrics.in_flight.get() - 1);
                     task_metrics
                         .tasks_completed

@@ -133,21 +133,21 @@ fn handle_request(
                     response,
                     Err(miette::miette!("worker is already running traffic")),
                 )?;
-                Ok(None)
-            } else {
-                let (abort_handle, abort_registration) = AbortHandle::new_pair();
-                let task_metrics = Rc::clone(metrics);
-                let task = compio::runtime::spawn(async move {
-                    let result = Abortable::new(
-                        send_traffic(traffic_slots, start_instant, task_metrics),
-                        abort_registration,
-                    )
-                    .await
-                    .unwrap_or(Ok(()));
-                    let _ = response.send(result);
-                });
-                Ok(Some(ActiveTraffic { abort_handle, task }))
+                return Ok(None);
             }
+
+            let (abort_handle, abort_registration) = AbortHandle::new_pair();
+            let task_metrics = Rc::clone(metrics);
+            let task = compio::runtime::spawn(async move {
+                let result = Abortable::new(
+                    send_traffic(traffic_slots, start_instant, task_metrics),
+                    abort_registration,
+                )
+                .await
+                .unwrap_or(Ok(()));
+                let _ = response.send(result);
+            });
+            Ok(Some(ActiveTraffic { abort_handle, task }))
         }
         WorkerCommand::Cancel => {
             if let Some(active_traffic) = active_traffic {

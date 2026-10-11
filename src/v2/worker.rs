@@ -59,11 +59,11 @@ impl Worker {
             if active_traffic.is_none() {
                 select! {
                     request = receive.fuse() => {
-                        if !handle_request_or_stop(
+                        if let RequestOutcome::Stop = handle_request_and_log_stop(
                             request,
                             &mut active_traffic,
                             &metrics,
-                        ) {
+                        )? {
                             break;
                         }
                     }
@@ -79,11 +79,11 @@ impl Worker {
                     .fuse();
                 let traffic_finished = select! {
                     request = receive.fuse() => {
-                        if !handle_request_or_stop(
+                        if let RequestOutcome::Stop = handle_request_and_log_stop(
                             request,
                             &mut active_traffic,
                             &metrics,
-                        ) {
+                        )? {
                             break;
                         }
                         false
@@ -103,25 +103,30 @@ impl Worker {
     }
 }
 
-fn handle_request_or_stop(
+enum RequestOutcome {
+    Continue,
+    Stop,
+}
+
+fn handle_request_and_log_stop(
     request: Result<WorkerRequest, async_channel::RecvError>,
     active_traffic: &mut Option<ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> bool {
-    let keep_running = handle_request(request, active_traffic, metrics);
-    if !keep_running {
+) -> miette::Result<RequestOutcome> {
+    let outcome = handle_request(request, active_traffic, metrics)?;
+    if matches!(outcome, RequestOutcome::Stop) {
         log_metrics(metrics);
     }
-    keep_running
+    Ok(outcome)
 }
 
 fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
     active_traffic: &mut Option<ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> bool {
+) -> miette::Result<RequestOutcome> {
     let Ok(WorkerRequest { command, response }) = request else {
-        return false;
+        return Ok(RequestOutcome::Stop);
     };
 
     match command {
@@ -130,7 +135,10 @@ fn handle_request(
             start_instant,
         } => {
             if active_traffic.is_some() {
-                let _ = response.send(Err(miette::miette!("worker is already running traffic")));
+                send_response(
+                    response,
+                    Err(miette::miette!("worker is already running traffic")),
+                )?;
             } else {
                 let (abort_handle, abort_registration) = AbortHandle::new_pair();
                 let task_metrics = Rc::clone(metrics);
@@ -150,10 +158,19 @@ fn handle_request(
             if let Some(active_traffic) = active_traffic {
                 active_traffic.abort_handle.abort();
             }
-            let _ = response.send(Ok(()));
+            send_response(response, Ok(()))?;
         }
     }
-    true
+    Ok(RequestOutcome::Continue)
+}
+
+fn send_response(
+    response: oneshot::Sender<miette::Result<()>>,
+    result: miette::Result<()>,
+) -> miette::Result<()> {
+    response
+        .send(result)
+        .map_err(|_| miette::miette!("worker response receiver was dropped"))
 }
 
 fn log_metrics(metrics: &Rc<WorkerMetrics>) {

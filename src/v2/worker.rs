@@ -60,6 +60,7 @@ impl Worker {
                             &mut abort_handles,
                             &metrics,
                         ) {
+                            log_metrics(&metrics);
                             break;
                         }
                     }
@@ -74,6 +75,7 @@ impl Worker {
                             &mut abort_handles,
                             &metrics,
                         ) {
+                            log_metrics(&metrics);
                             break;
                         }
                     }

@@ -42,6 +42,9 @@ impl Controller {
                 "end instant must not precede start instant"
             ));
         }
+        if self.handles.is_empty() {
+            return Err(miette::miette!("controller has no workers"));
+        }
 
         let slot_count = end_instant
             .duration_since(start_instant)

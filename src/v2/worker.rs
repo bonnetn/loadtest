@@ -38,7 +38,8 @@ struct WorkerMetrics {
 
 struct ActiveTraffic {
     abort_handle: AbortHandle,
-    task: compio::runtime::JoinHandle<()>,
+    task: compio::runtime::JoinHandle<miette::Result<()>>,
+    response: oneshot::Sender<miette::Result<()>>,
 }
 
 impl Worker {
@@ -59,6 +60,10 @@ impl Worker {
             if active_traffic.is_none() {
                 select! {
                     request = receive.fuse() => {
+                        let Ok(request) = request else {
+                            log_metrics(&metrics);
+                            return Ok(());
+                        };
                         if let Some(new_active_traffic) = handle_request_and_log_error(
                             request,
                             active_traffic.as_ref(),
@@ -77,8 +82,12 @@ impl Worker {
                     .expect("active traffic must exist")
                     .task)
                     .fuse();
-                let traffic_finished = select! {
+                let traffic_result = select! {
                     request = receive.fuse() => {
+                        let Ok(request) = request else {
+                            log_metrics(&metrics);
+                            return Ok(());
+                        };
                         if let Some(new_active_traffic) = handle_request_and_log_error(
                             request,
                             active_traffic.as_ref(),
@@ -86,16 +95,22 @@ impl Worker {
                         )? {
                             active_traffic = Some(new_active_traffic);
                         }
-                        false
+                        None
                     }
-                    _ = active_future => true,
+                    result = active_future => Some(result),
                     _ = interval.tick().fuse() => {
                         log_metrics(&metrics);
-                        false
+                        None
                     },
                 };
-                if traffic_finished {
-                    active_traffic = None;
+                if let Some(task_result) = traffic_result {
+                    let active_traffic = active_traffic
+                        .take()
+                        .expect("active traffic must exist when its task finishes");
+                    let result = task_result
+                        .map_err(|error| miette::miette!("traffic task failed: {error}"))
+                        .and_then(|result| result);
+                    send_response(active_traffic.response, result)?;
                 }
             }
         }
@@ -103,7 +118,7 @@ impl Worker {
 }
 
 fn handle_request_and_log_error(
-    request: Result<WorkerRequest, async_channel::RecvError>,
+    request: WorkerRequest,
     active_traffic: Option<&ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
 ) -> miette::Result<Option<ActiveTraffic>> {
@@ -115,13 +130,11 @@ fn handle_request_and_log_error(
 }
 
 fn handle_request(
-    request: Result<WorkerRequest, async_channel::RecvError>,
+    request: WorkerRequest,
     active_traffic: Option<&ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
 ) -> miette::Result<Option<ActiveTraffic>> {
-    let Ok(WorkerRequest { command, response }) = request else {
-        return Err(miette::miette!("worker command channel was closed"));
-    };
+    let WorkerRequest { command, response } = request;
 
     match command {
         WorkerCommand::SendTraffic {
@@ -139,15 +152,18 @@ fn handle_request(
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             let task_metrics = Rc::clone(metrics);
             let task = compio::runtime::spawn(async move {
-                let result = Abortable::new(
+                Abortable::new(
                     send_traffic(traffic_slots, start_instant, task_metrics),
                     abort_registration,
                 )
                 .await
-                .unwrap_or(Ok(()));
-                let _ = response.send(result);
+                .unwrap_or(Ok(()))
             });
-            Ok(Some(ActiveTraffic { abort_handle, task }))
+            Ok(Some(ActiveTraffic {
+                abort_handle,
+                task,
+                response,
+            }))
         }
         WorkerCommand::Cancel => {
             if let Some(active_traffic) = active_traffic {
@@ -253,9 +269,6 @@ async fn send_traffic(
             }
             next_slot += 1;
         }
-        if next_slot >= traffic_slots.len() {
-            break;
-        }
         metrics
             .max_requests_per_tick
             .set(metrics.max_requests_per_tick.get().max(requests_this_tick));
@@ -266,6 +279,9 @@ async fn send_traffic(
             metrics
                 .max_catch_up_duration_us
                 .set(metrics.max_catch_up_duration_us.get().max(duration_us));
+        }
+        if next_slot >= traffic_slots.len() {
+            break;
         }
     }
 

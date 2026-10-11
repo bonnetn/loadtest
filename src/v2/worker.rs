@@ -59,13 +59,11 @@ impl Worker {
             if active_traffic.is_none() {
                 select! {
                     request = receive.fuse() => {
-                        if let RequestOutcome::Stop = handle_request_and_log_stop(
+                        handle_request_and_log_error(
                             request,
                             &mut active_traffic,
                             &metrics,
-                        )? {
-                            break;
-                        }
+                        )?;
                     }
                     _ = interval.tick().fuse() => {
                         log_metrics(&metrics);
@@ -79,13 +77,11 @@ impl Worker {
                     .fuse();
                 let traffic_finished = select! {
                     request = receive.fuse() => {
-                        if let RequestOutcome::Stop = handle_request_and_log_stop(
+                        handle_request_and_log_error(
                             request,
                             &mut active_traffic,
                             &metrics,
-                        )? {
-                            break;
-                        }
+                        )?;
                         false
                     }
                     _ = active_future => true,
@@ -99,34 +95,28 @@ impl Worker {
                 }
             }
         }
-        Ok(())
     }
 }
 
-enum RequestOutcome {
-    Continue,
-    Stop,
-}
-
-fn handle_request_and_log_stop(
+fn handle_request_and_log_error(
     request: Result<WorkerRequest, async_channel::RecvError>,
     active_traffic: &mut Option<ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> miette::Result<RequestOutcome> {
-    let outcome = handle_request(request, active_traffic, metrics)?;
-    if matches!(outcome, RequestOutcome::Stop) {
+) -> miette::Result<()> {
+    let result = handle_request(request, active_traffic, metrics);
+    if result.is_err() {
         log_metrics(metrics);
     }
-    Ok(outcome)
+    result
 }
 
 fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
     active_traffic: &mut Option<ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
-) -> miette::Result<RequestOutcome> {
+) -> miette::Result<()> {
     let Ok(WorkerRequest { command, response }) = request else {
-        return Ok(RequestOutcome::Stop);
+        return Err(miette::miette!("worker command channel was closed"));
     };
 
     match command {
@@ -161,7 +151,7 @@ fn handle_request(
             send_response(response, Ok(()))?;
         }
     }
-    Ok(RequestOutcome::Continue)
+    Ok(())
 }
 
 fn send_response(

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, try_join_all};
+use futures::future::join_all;
 use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution as _, Poisson};
 
@@ -68,19 +68,20 @@ impl Controller {
             schedules.push(traffic_slots);
         }
 
-        try_join_all(
-            self.handles
-                .iter()
-                .zip(schedules)
-                .map(|(handle, traffic_slots)| {
-                    handle.send(WorkerCommand::SendTraffic {
-                        traffic_slots,
-                        start_instant,
-                    })
-                }),
-        )
-        .await
-        .map(|_| ())
+        let results = join_all(self.handles.iter().zip(schedules).map(
+            |(handle, traffic_slots)| {
+                handle.send(WorkerCommand::SendTraffic {
+                    traffic_slots,
+                    start_instant,
+                })
+            },
+        ))
+        .await;
+        if let Some(error) = results.into_iter().find_map(Result::err) {
+            let _ = self.cancel_workers().await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn cancel_workers(&self) -> miette::Result<()> {

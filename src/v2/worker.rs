@@ -36,6 +36,19 @@ struct WorkerMetrics {
     max_in_flight: Cell<usize>,
 }
 
+struct InFlightGuard {
+    metrics: Rc<WorkerMetrics>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.metrics.in_flight.set(self.metrics.in_flight.get() - 1);
+        self.metrics
+            .tasks_completed
+            .set(self.metrics.tasks_completed.get() + 1);
+    }
+}
+
 struct ActiveTraffic {
     abort_handle: AbortHandle,
     task: compio::runtime::JoinHandle<miette::Result<()>>,
@@ -53,6 +66,7 @@ enum RequestAction {
 enum ActiveEvent {
     Request(miette::Result<RequestAction>),
     Traffic(Result<miette::Result<()>, compio::runtime::JoinError>),
+    Shutdown,
     Tick,
 }
 
@@ -75,6 +89,7 @@ impl Worker {
                 select! {
                     request = receive.fuse() => {
                         let Ok(request) = request else {
+                            shutdown_active_traffic(&mut active_traffic).await;
                             log_metrics(&metrics);
                             return Ok(());
                         };
@@ -99,15 +114,14 @@ impl Worker {
                     .fuse();
                 let event = select! {
                     request = receive.fuse() => {
-                        let Ok(request) = request else {
-                            log_metrics(&metrics);
-                            return Ok(());
-                        };
-                        ActiveEvent::Request(handle_request_and_log_error(
-                            request,
-                            active_traffic.as_ref(),
-                            &metrics,
-                        ))
+                        match request {
+                            Ok(request) => ActiveEvent::Request(handle_request_and_log_error(
+                                request,
+                                active_traffic.as_ref(),
+                                &metrics,
+                            )),
+                            Err(_) => ActiveEvent::Shutdown,
+                        }
                     }
                     result = active_future => ActiveEvent::Traffic(result),
                     _ = interval.tick().fuse() => {
@@ -122,6 +136,11 @@ impl Worker {
                     },
                     ActiveEvent::Traffic(task_result) => {
                         finish_active_traffic(&mut active_traffic, task_result);
+                    }
+                    ActiveEvent::Shutdown => {
+                        shutdown_active_traffic(&mut active_traffic).await;
+                        log_metrics(&metrics);
+                        return Ok(());
                     }
                     ActiveEvent::Tick => {}
                 }
@@ -162,6 +181,24 @@ fn finish_active_traffic(
     }
     for response in active_traffic.cancel_responses {
         if let Err(error) = send_response(response, Ok(())) {
+            log_request_error(&error);
+        }
+    }
+}
+
+async fn shutdown_active_traffic(active_traffic: &mut Option<ActiveTraffic>) {
+    let Some(active_traffic) = active_traffic.take() else {
+        return;
+    };
+    active_traffic.cancelled.set(true);
+    active_traffic.abort_handle.abort();
+    let _ = active_traffic.task.await;
+    let result = Err(miette::miette!("worker shut down during traffic"));
+    if let Err(error) = send_response(active_traffic.response, result) {
+        log_request_error(&error);
+    }
+    for response in active_traffic.cancel_responses {
+        if let Err(error) = send_response(response, Err(miette::miette!("worker shut down"))) {
             log_request_error(&error);
         }
     }
@@ -335,13 +372,12 @@ async fn send_traffic(
                 let task_metrics = Rc::clone(&metrics);
                 let task_cancelled = Rc::clone(&cancelled);
                 compio::runtime::spawn(async move {
+                    let _in_flight = InFlightGuard {
+                        metrics: task_metrics,
+                    };
                     if !task_cancelled.get() {
                         std::hint::black_box(());
                     }
-                    task_metrics.in_flight.set(task_metrics.in_flight.get() - 1);
-                    task_metrics
-                        .tasks_completed
-                        .set(task_metrics.tasks_completed.get() + 1);
                 })
                 .detach();
             }
@@ -363,6 +399,7 @@ async fn send_traffic(
         }
     }
 
+    wait_for_in_flight(metrics).await;
     Ok(())
 }
 

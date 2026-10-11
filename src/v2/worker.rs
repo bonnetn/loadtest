@@ -12,7 +12,6 @@ use futures::{
     channel::oneshot,
     future::{AbortHandle, Abortable},
     pin_mut, select,
-    stream::{FuturesUnordered, StreamExt as _},
 };
 
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -39,6 +38,11 @@ struct WorkerMetrics {
     max_in_flight: Cell<usize>,
 }
 
+struct ActiveTraffic {
+    abort_handle: AbortHandle,
+    future: WorkerTask,
+}
+
 impl Worker {
     pub fn new() -> (Self, WorkerHandle) {
         let (sender, receiver) = async_channel::unbounded();
@@ -48,43 +52,54 @@ impl Worker {
     pub async fn run(self) -> miette::Result<()> {
         let metrics = Rc::new(WorkerMetrics::default());
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
-        let mut tasks: FuturesUnordered<WorkerTask> = FuturesUnordered::new();
-        let mut abort_handles = Vec::new();
+        let mut active_traffic = None;
 
         loop {
             let receive = self.receiver.recv();
             pin_mut!(receive);
 
-            if tasks.is_empty() {
+            if active_traffic.is_none() {
                 select! {
                     request = receive.fuse() => {
                         if !handle_request(
                             request,
-                            &mut tasks,
-                            &mut abort_handles,
+                            &mut active_traffic,
                             &metrics,
                         ) {
                             log_metrics(&metrics);
                             break;
                         }
                     }
-                    _ = interval.tick().fuse() => log_metrics(&metrics),
+                    _ = interval.tick().fuse() => {
+                        log_metrics(&metrics);
+                    }
                 }
             } else {
-                select! {
+                let active_future = active_traffic
+                    .as_mut()
+                    .expect("active traffic must exist")
+                    .future
+                    .as_mut();
+                let traffic_finished = select! {
                     request = receive.fuse() => {
                         if !handle_request(
                             request,
-                            &mut tasks,
-                            &mut abort_handles,
+                            &mut active_traffic,
                             &metrics,
                         ) {
                             log_metrics(&metrics);
                             break;
                         }
+                        false
                     }
-                    _ = tasks.next().fuse() => {}
-                    _ = interval.tick().fuse() => log_metrics(&metrics),
+                    _ = active_future.fuse() => true,
+                    _ = interval.tick().fuse() => {
+                        log_metrics(&metrics);
+                        false
+                    },
+                };
+                if traffic_finished {
+                    active_traffic = None;
                 }
             }
         }
@@ -96,8 +111,7 @@ type WorkerTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
-    tasks: &mut FuturesUnordered<WorkerTask>,
-    abort_handles: &mut Vec<AbortHandle>,
+    active_traffic: &mut Option<ActiveTraffic>,
     metrics: &Rc<WorkerMetrics>,
 ) -> bool {
     let Ok(WorkerRequest { command, response }) = request else {
@@ -109,22 +123,29 @@ fn handle_request(
             traffic_slots,
             start_instant,
         } => {
-            let (abort_handle, abort_registration) = AbortHandle::new_pair();
-            abort_handles.push(abort_handle);
-            let task_metrics = Rc::clone(metrics);
-            tasks.push(Box::pin(async move {
-                let result = Abortable::new(
-                    send_traffic(traffic_slots, start_instant, task_metrics),
-                    abort_registration,
-                )
-                .await
-                .unwrap_or(Ok(()));
-                let _ = response.send(result);
-            }));
+            if active_traffic.is_some() {
+                let _ = response.send(Err(miette::miette!("worker is already running traffic")));
+            } else {
+                let (abort_handle, abort_registration) = AbortHandle::new_pair();
+                let task_metrics = Rc::clone(metrics);
+                let future = Box::pin(async move {
+                    let result = Abortable::new(
+                        send_traffic(traffic_slots, start_instant, task_metrics),
+                        abort_registration,
+                    )
+                    .await
+                    .unwrap_or(Ok(()));
+                    let _ = response.send(result);
+                });
+                *active_traffic = Some(ActiveTraffic {
+                    abort_handle,
+                    future,
+                });
+            }
         }
         WorkerCommand::Cancel => {
-            for abort_handle in abort_handles.drain(..) {
-                abort_handle.abort();
+            if let Some(active_traffic) = active_traffic {
+                active_traffic.abort_handle.abort();
             }
             let _ = response.send(Ok(()));
         }

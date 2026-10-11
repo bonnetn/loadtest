@@ -17,7 +17,6 @@ use futures::{
 use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
 
-const SIMULATED_WORK_DURATION: Duration = Duration::from_secs(1);
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Worker {
@@ -169,7 +168,7 @@ async fn send_traffic(
         in_flight.set(in_flight.get() + 1);
         let task_in_flight = Rc::clone(&in_flight);
         compio::runtime::spawn(async move {
-            compio::time::sleep(SIMULATED_WORK_DURATION).await;
+            std::hint::black_box(());
             task_in_flight.set(task_in_flight.get() - 1);
         })
         .detach();

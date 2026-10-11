@@ -1,7 +1,5 @@
 use std::{
     cell::Cell,
-    future::Future,
-    pin::Pin,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -40,7 +38,7 @@ struct WorkerMetrics {
 
 struct ActiveTraffic {
     abort_handle: AbortHandle,
-    future: WorkerTask,
+    task: compio::runtime::JoinHandle<()>,
 }
 
 impl Worker {
@@ -61,12 +59,11 @@ impl Worker {
             if active_traffic.is_none() {
                 select! {
                     request = receive.fuse() => {
-                        if !handle_request(
+                        if !handle_request_or_stop(
                             request,
                             &mut active_traffic,
                             &metrics,
                         ) {
-                            log_metrics(&metrics);
                             break;
                         }
                     }
@@ -75,24 +72,23 @@ impl Worker {
                     }
                 }
             } else {
-                let active_future = active_traffic
+                let mut active_future = (&mut active_traffic
                     .as_mut()
                     .expect("active traffic must exist")
-                    .future
-                    .as_mut();
+                    .task)
+                    .fuse();
                 let traffic_finished = select! {
                     request = receive.fuse() => {
-                        if !handle_request(
+                        if !handle_request_or_stop(
                             request,
                             &mut active_traffic,
                             &metrics,
                         ) {
-                            log_metrics(&metrics);
                             break;
                         }
                         false
                     }
-                    _ = active_future.fuse() => true,
+                    _ = active_future => true,
                     _ = interval.tick().fuse() => {
                         log_metrics(&metrics);
                         false
@@ -107,7 +103,17 @@ impl Worker {
     }
 }
 
-type WorkerTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
+fn handle_request_or_stop(
+    request: Result<WorkerRequest, async_channel::RecvError>,
+    active_traffic: &mut Option<ActiveTraffic>,
+    metrics: &Rc<WorkerMetrics>,
+) -> bool {
+    let keep_running = handle_request(request, active_traffic, metrics);
+    if !keep_running {
+        log_metrics(metrics);
+    }
+    keep_running
+}
 
 fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
@@ -128,7 +134,7 @@ fn handle_request(
             } else {
                 let (abort_handle, abort_registration) = AbortHandle::new_pair();
                 let task_metrics = Rc::clone(metrics);
-                let future = Box::pin(async move {
+                let task = compio::runtime::spawn(async move {
                     let result = Abortable::new(
                         send_traffic(traffic_slots, start_instant, task_metrics),
                         abort_registration,
@@ -137,10 +143,7 @@ fn handle_request(
                     .unwrap_or(Ok(()));
                     let _ = response.send(result);
                 });
-                *active_traffic = Some(ActiveTraffic {
-                    abort_handle,
-                    future,
-                });
+                *active_traffic = Some(ActiveTraffic { abort_handle, task });
             }
         }
         WorkerCommand::Cancel => {

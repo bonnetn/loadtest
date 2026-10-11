@@ -208,12 +208,23 @@ fn handle_request(
             let task_metrics = Rc::clone(metrics);
             let task_cancelled = Rc::clone(&cancelled);
             let task = compio::runtime::spawn(async move {
-                Abortable::new(
-                    send_traffic(traffic_slots, start_instant, task_metrics, task_cancelled),
+                match Abortable::new(
+                    send_traffic(
+                        traffic_slots,
+                        start_instant,
+                        Rc::clone(&task_metrics),
+                        task_cancelled,
+                    ),
                     abort_registration,
                 )
                 .await
-                .unwrap_or_else(|_| Err(miette::miette!("traffic cancelled")))
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        wait_for_in_flight(task_metrics).await;
+                        Err(miette::miette!("traffic cancelled"))
+                    }
+                }
             });
             Ok(RequestAction::Start(ActiveTraffic {
                 abort_handle,
@@ -353,6 +364,12 @@ async fn send_traffic(
     }
 
     Ok(())
+}
+
+async fn wait_for_in_flight(metrics: Rc<WorkerMetrics>) {
+    while metrics.in_flight.get() != 0 {
+        compio::time::sleep(Duration::from_millis(1)).await;
+    }
 }
 
 #[derive(Debug)]

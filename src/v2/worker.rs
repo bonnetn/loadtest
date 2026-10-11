@@ -22,6 +22,19 @@ pub struct Worker {
     receiver: Receiver<WorkerRequest>,
 }
 
+#[derive(Default)]
+struct WorkerMetrics {
+    timer_ticks: Cell<u64>,
+    timer_ticks_dropped: Cell<u64>,
+    slots_traversed: Cell<u64>,
+    max_slots_per_tick: Cell<usize>,
+    requests_scheduled: Cell<u64>,
+    tasks_spawned: Cell<u64>,
+    tasks_completed: Cell<u64>,
+    in_flight: Cell<usize>,
+    max_in_flight: Cell<usize>,
+}
+
 impl Worker {
     pub fn new() -> (Self, WorkerHandle) {
         let (sender, receiver) = async_channel::unbounded();
@@ -29,7 +42,7 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let in_flight = Rc::new(Cell::new(0));
+        let metrics = Rc::new(WorkerMetrics::default());
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
         let mut tasks: FuturesUnordered<WorkerTask> = FuturesUnordered::new();
         let mut abort_handles = Vec::new();
@@ -45,12 +58,12 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &in_flight,
+                            &metrics,
                         ) {
                             break;
                         }
                     }
-                    _ = interval.tick().fuse() => log_in_flight(&in_flight),
+                    _ = interval.tick().fuse() => log_metrics(&metrics),
                 }
             } else {
                 select! {
@@ -59,13 +72,13 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &in_flight,
+                            &metrics,
                         ) {
                             break;
                         }
                     }
                     _ = tasks.next().fuse() => {}
-                    _ = interval.tick().fuse() => log_in_flight(&in_flight),
+                    _ = interval.tick().fuse() => log_metrics(&metrics),
                 }
             }
         }
@@ -79,7 +92,7 @@ fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
     tasks: &mut FuturesUnordered<WorkerTask>,
     abort_handles: &mut Vec<AbortHandle>,
-    in_flight: &Rc<Cell<usize>>,
+    metrics: &Rc<WorkerMetrics>,
 ) -> bool {
     let Ok(WorkerRequest { command, response }) = request else {
         return false;
@@ -93,10 +106,10 @@ fn handle_request(
         } => {
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             abort_handles.push(abort_handle);
-            let task_in_flight = Rc::clone(in_flight);
+            let task_metrics = Rc::clone(metrics);
             tasks.push(Box::pin(async move {
                 let result = Abortable::new(
-                    send_traffic(traffic_slots, start_instant, end_instant, task_in_flight),
+                    send_traffic(traffic_slots, start_instant, end_instant, task_metrics),
                     abort_registration,
                 )
                 .await
@@ -114,11 +127,19 @@ fn handle_request(
     true
 }
 
-fn log_in_flight(in_flight: &Rc<Cell<usize>>) {
+fn log_metrics(metrics: &Rc<WorkerMetrics>) {
     println!(
-        "worker {} in-flight tasks: {}",
+        "worker {} metrics: ticks={} dropped_ticks={} slots={} max_slots_per_tick={} scheduled={} spawned={} completed={} in_flight={} max_in_flight={}",
         std::thread::current().name().unwrap_or("unnamed"),
-        in_flight.get()
+        metrics.timer_ticks.get(),
+        metrics.timer_ticks_dropped.get(),
+        metrics.slots_traversed.get(),
+        metrics.max_slots_per_tick.get(),
+        metrics.requests_scheduled.get(),
+        metrics.tasks_spawned.get(),
+        metrics.tasks_completed.get(),
+        metrics.in_flight.get(),
+        metrics.max_in_flight.get(),
     );
 }
 
@@ -126,7 +147,7 @@ async fn send_traffic(
     traffic_slots: Vec<u16>,
     start_instant: Instant,
     end_instant: Instant,
-    in_flight: Rc<Cell<usize>>,
+    metrics: Rc<WorkerMetrics>,
 ) -> miette::Result<()> {
     if end_instant < start_instant {
         return Err(miette::miette!(
@@ -136,6 +157,7 @@ async fn send_traffic(
 
     let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
     let mut next_slot = 0;
+    let mut previous_tick_slot = None;
 
     loop {
         let now = arrival_timer.tick().await;
@@ -145,13 +167,41 @@ async fn send_traffic(
 
         let current_slot = (now.duration_since(start_instant).as_nanos()
             / ARRIVAL_TIMER_PERIOD.as_nanos()) as usize;
+        metrics.timer_ticks.set(metrics.timer_ticks.get() + 1);
+        if let Some(previous_tick_slot) = previous_tick_slot {
+            let dropped_ticks = current_slot.saturating_sub(previous_tick_slot + 1);
+            metrics
+                .timer_ticks_dropped
+                .set(metrics.timer_ticks_dropped.get() + dropped_ticks as u64);
+        }
+        previous_tick_slot = Some(current_slot);
+
+        let slots_to_traverse = current_slot.saturating_sub(next_slot) + 1;
+        metrics
+            .slots_traversed
+            .set(metrics.slots_traversed.get() + slots_to_traverse as u64);
+        metrics
+            .max_slots_per_tick
+            .set(metrics.max_slots_per_tick.get().max(slots_to_traverse));
         while next_slot <= current_slot && next_slot < traffic_slots.len() {
+            let request_count = traffic_slots[next_slot] as u64;
+            metrics
+                .requests_scheduled
+                .set(metrics.requests_scheduled.get() + request_count);
             for _ in 0..traffic_slots[next_slot] {
-                in_flight.set(in_flight.get() + 1);
-                let task_in_flight = Rc::clone(&in_flight);
+                let in_flight = metrics.in_flight.get() + 1;
+                metrics.in_flight.set(in_flight);
+                metrics
+                    .max_in_flight
+                    .set(metrics.max_in_flight.get().max(in_flight));
+                metrics.tasks_spawned.set(metrics.tasks_spawned.get() + 1);
+                let task_metrics = Rc::clone(&metrics);
                 compio::runtime::spawn(async move {
                     std::hint::black_box(());
-                    task_in_flight.set(task_in_flight.get() - 1);
+                    task_metrics.in_flight.set(task_metrics.in_flight.get() - 1);
+                    task_metrics
+                        .tasks_completed
+                        .set(task_metrics.tasks_completed.get() + 1);
                 })
                 .detach();
             }

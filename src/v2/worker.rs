@@ -108,14 +108,13 @@ fn handle_request(
         WorkerCommand::SendTraffic {
             traffic_slots,
             start_instant,
-            end_instant,
         } => {
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             abort_handles.push(abort_handle);
             let task_metrics = Rc::clone(metrics);
             tasks.push(Box::pin(async move {
                 let result = Abortable::new(
-                    send_traffic(traffic_slots, start_instant, end_instant, task_metrics),
+                    send_traffic(traffic_slots, start_instant, task_metrics),
                     abort_registration,
                 )
                 .await
@@ -156,25 +155,14 @@ fn log_metrics(metrics: &Rc<WorkerMetrics>) {
 async fn send_traffic(
     traffic_slots: Vec<u16>,
     start_instant: Instant,
-    end_instant: Instant,
     metrics: Rc<WorkerMetrics>,
 ) -> miette::Result<()> {
-    if end_instant < start_instant {
-        return Err(miette::miette!(
-            "end instant must not precede start instant"
-        ));
-    }
-
     let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
     let mut next_slot = 0;
     let mut previous_tick_slot = None;
 
     loop {
         let now = arrival_timer.tick().await;
-        if now >= end_instant {
-            break;
-        }
-
         let current_slot = (now.duration_since(start_instant).as_nanos()
             / ARRIVAL_TIMER_PERIOD.as_nanos()) as usize;
         metrics.timer_ticks.set(metrics.timer_ticks.get() + 1);
@@ -229,6 +217,9 @@ async fn send_traffic(
             }
             next_slot += 1;
         }
+        if next_slot >= traffic_slots.len() {
+            break;
+        }
         metrics
             .max_requests_per_tick
             .set(metrics.max_requests_per_tick.get().max(requests_this_tick));
@@ -250,7 +241,6 @@ pub enum WorkerCommand {
     SendTraffic {
         traffic_slots: Vec<u16>,
         start_instant: Instant,
-        end_instant: Instant,
     },
     Cancel,
 }

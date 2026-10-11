@@ -73,7 +73,6 @@ impl Controller {
                     handle.send(WorkerCommand::SendTraffic {
                         traffic_slots,
                         start_instant,
-                        end_instant,
                     })
                 }),
         )

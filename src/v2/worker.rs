@@ -51,10 +51,15 @@ impl Drop for InFlightGuard {
 
 struct ActiveTraffic {
     abort_handle: AbortHandle,
-    task: compio::runtime::JoinHandle<miette::Result<()>>,
+    task: compio::runtime::JoinHandle<TrafficOutcome>,
     response: oneshot::Sender<miette::Result<()>>,
     cancel_responses: Vec<oneshot::Sender<miette::Result<()>>>,
     cancelled: Rc<Cell<bool>>,
+}
+
+struct TrafficOutcome {
+    result: miette::Result<()>,
+    cancelled: bool,
 }
 
 enum RequestAction {
@@ -65,7 +70,7 @@ enum RequestAction {
 
 enum ActiveEvent {
     Request(miette::Result<RequestAction>),
-    Traffic(Result<miette::Result<()>, compio::runtime::JoinError>),
+    Traffic(Result<TrafficOutcome, compio::runtime::JoinError>),
     Shutdown,
     Tick,
 }
@@ -168,19 +173,31 @@ fn apply_request_action(action: RequestAction, active_traffic: &mut Option<Activ
 
 fn finish_active_traffic(
     active_traffic: &mut Option<ActiveTraffic>,
-    task_result: Result<miette::Result<()>, compio::runtime::JoinError>,
+    task_result: Result<TrafficOutcome, compio::runtime::JoinError>,
 ) {
     let active_traffic = active_traffic
         .take()
         .expect("active traffic must exist when its task finishes");
-    let result = task_result
-        .map_err(|error| miette::miette!("traffic task failed: {error}"))
-        .and_then(|result| result);
-    if let Err(error) = send_response(active_traffic.response, result) {
+    let outcome = match task_result {
+        Ok(outcome) => outcome,
+        Err(error) => TrafficOutcome {
+            result: Err(miette::miette!("traffic task failed: {error}")),
+            cancelled: false,
+        },
+    };
+    let cancellation_succeeded = outcome.cancelled;
+    if let Err(error) = send_response(active_traffic.response, outcome.result) {
         log_request_error(&error);
     }
     for response in active_traffic.cancel_responses {
-        if let Err(error) = send_response(response, Ok(())) {
+        let result = if cancellation_succeeded {
+            Ok(())
+        } else {
+            Err(miette::miette!(
+                "traffic completed before cancellation was applied"
+            ))
+        };
+        if let Err(error) = send_response(response, result) {
             log_request_error(&error);
         }
     }
@@ -256,10 +273,16 @@ fn handle_request(
                 )
                 .await
                 {
-                    Ok(result) => result,
+                    Ok(result) => TrafficOutcome {
+                        result,
+                        cancelled: false,
+                    },
                     Err(_) => {
                         wait_for_in_flight(task_metrics).await;
-                        Err(miette::miette!("traffic cancelled"))
+                        TrafficOutcome {
+                            result: Err(miette::miette!("traffic cancelled")),
+                            cancelled: true,
+                        }
                     }
                 }
             });
@@ -277,6 +300,7 @@ fn handle_request(
                 active_traffic.cancelled.set(true);
                 return Ok(RequestAction::Cancel(response));
             }
+            // Cancellation is idempotent: there is nothing to cancel when idle.
             send_response(response, Ok(()))?;
             Ok(RequestAction::None)
         }

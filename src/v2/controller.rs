@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use futures::future::join_all;
+use futures::{
+    future::join_all,
+    stream::{FuturesUnordered, StreamExt as _},
+};
 use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution as _, Poisson};
 
@@ -68,18 +71,18 @@ impl Controller {
             schedules.push(traffic_slots);
         }
 
-        let results = join_all(self.handles.iter().zip(schedules).map(
-            |(handle, traffic_slots)| {
-                handle.send(WorkerCommand::SendTraffic {
-                    traffic_slots,
-                    start_instant,
-                })
-            },
-        ))
-        .await;
-        if let Some(error) = results.into_iter().find_map(Result::err) {
-            let _ = self.cancel_workers().await;
-            return Err(error);
+        let mut submissions = FuturesUnordered::new();
+        for (handle, traffic_slots) in self.handles.iter().zip(schedules) {
+            submissions.push(handle.send(WorkerCommand::SendTraffic {
+                traffic_slots,
+                start_instant,
+            }));
+        }
+        while let Some(result) = submissions.next().await {
+            if let Err(error) = result {
+                let _ = self.cancel_workers().await;
+                return Err(error);
+            }
         }
         Ok(())
     }

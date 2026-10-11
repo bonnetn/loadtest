@@ -138,8 +138,7 @@ async fn send_traffic(
     let mut next_slot = 0;
 
     loop {
-        arrival_timer.tick().await;
-        let now = Instant::now();
+        let now = arrival_timer.tick().await;
         if now >= end_instant {
             break;
         }

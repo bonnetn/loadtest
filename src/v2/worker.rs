@@ -149,7 +149,10 @@ async fn send_traffic(
     }
 
     let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
-    let mut next_arrival = start_instant;
+    let first_delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
+    let mut next_arrival = start_instant
+        .checked_add(first_delay)
+        .unwrap_or(end_instant);
 
     loop {
         arrival_timer.tick().await;

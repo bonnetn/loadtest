@@ -164,12 +164,8 @@ async fn send_traffic(
             }
 
             in_flight.set(in_flight.get() + 1);
-            let task_in_flight = Rc::clone(&in_flight);
-            compio::runtime::spawn(async move {
-                std::hint::black_box(());
-                task_in_flight.set(task_in_flight.get() - 1);
-            })
-            .detach();
+            std::hint::black_box(());
+            in_flight.set(in_flight.get() - 1);
 
             let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
             next_arrival = next_arrival.checked_add(delay).unwrap_or(end_instant);

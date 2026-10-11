@@ -18,7 +18,7 @@ use futures::{
     pin_mut, select,
     stream::{FuturesUnordered, StreamExt as _},
 };
-use rand::{RngCore as _, SeedableRng, rngs::SmallRng};
+use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Exp};
 
 const SIMULATED_WORK_DURATION: Duration = Duration::from_secs(1);
@@ -42,7 +42,7 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let mut random = SmallRng::from_os_rng();
+        let mut random = rand::make_rng::<SmallRng>();
         let in_flight = Rc::new(Cell::new(0));
         let scheduled = Arc::clone(&self.scheduled);
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
@@ -114,7 +114,7 @@ fn handle_request(
         } => {
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             abort_handles.push(abort_handle);
-            let task_random = SmallRng::seed_from_u64(random.next_u64());
+            let task_random = random.fork();
             let task_in_flight = Rc::clone(in_flight);
             let task_scheduled = Arc::clone(scheduled);
             tasks.push(Box::pin(async move {

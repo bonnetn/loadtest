@@ -2,7 +2,6 @@ use std::time::{Duration, Instant};
 
 use futures::{FutureExt as _, pin_mut, select};
 use miette::{IntoDiagnostic, WrapErr};
-use rand_distr::Exp;
 
 use super::{controller::Controller, worker::Worker};
 
@@ -54,12 +53,7 @@ impl Tester {
                     .wrap_err("failed to build controller runtime")?;
                 let start_instant = Instant::now() + Duration::from_millis(100);
                 let end_instant = start_instant + Duration::from_secs(10);
-                let per_worker_throughput = TOTAL_THROUGHPUT / controller.handles().len() as f64;
-                let arrival_distribution = Exp::new(per_worker_throughput)
-                    .into_diagnostic()
-                    .wrap_err("failed to create arrival distribution")?;
-                let traffic =
-                    controller.send_traffic(arrival_distribution, start_instant, end_instant);
+                let traffic = controller.send_traffic(TOTAL_THROUGHPUT, start_instant, end_instant);
                 let ctrl_c = compio::signal::ctrl_c();
                 pin_mut!(traffic, ctrl_c);
                 runtime.block_on(async {

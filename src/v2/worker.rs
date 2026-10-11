@@ -14,8 +14,6 @@ use futures::{
     pin_mut, select,
     stream::{FuturesUnordered, StreamExt as _},
 };
-use rand::{SeedableRng, rngs::SmallRng};
-use rand_distr::{Distribution, Exp};
 
 const IN_FLIGHT_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const ARRIVAL_TIMER_PERIOD: Duration = Duration::from_millis(1);
@@ -31,7 +29,6 @@ impl Worker {
     }
 
     pub async fn run(self) -> miette::Result<()> {
-        let mut random = rand::make_rng::<SmallRng>();
         let in_flight = Rc::new(Cell::new(0));
         let mut interval = compio::time::interval(IN_FLIGHT_LOG_INTERVAL);
         let mut tasks: FuturesUnordered<WorkerTask> = FuturesUnordered::new();
@@ -48,7 +45,6 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &mut random,
                             &in_flight,
                         ) {
                             break;
@@ -63,7 +59,6 @@ impl Worker {
                             request,
                             &mut tasks,
                             &mut abort_handles,
-                            &mut random,
                             &in_flight,
                         ) {
                             break;
@@ -84,7 +79,6 @@ fn handle_request(
     request: Result<WorkerRequest, async_channel::RecvError>,
     tasks: &mut FuturesUnordered<WorkerTask>,
     abort_handles: &mut Vec<AbortHandle>,
-    random: &mut SmallRng,
     in_flight: &Rc<Cell<usize>>,
 ) -> bool {
     let Ok(WorkerRequest { command, response }) = request else {
@@ -93,23 +87,16 @@ fn handle_request(
 
     match command {
         WorkerCommand::SendTraffic {
-            arrival_distribution,
+            traffic_slots,
             start_instant,
             end_instant,
         } => {
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             abort_handles.push(abort_handle);
-            let task_random = random.fork();
             let task_in_flight = Rc::clone(in_flight);
             tasks.push(Box::pin(async move {
                 let result = Abortable::new(
-                    send_traffic(
-                        arrival_distribution,
-                        start_instant,
-                        end_instant,
-                        task_random,
-                        task_in_flight,
-                    ),
+                    send_traffic(traffic_slots, start_instant, end_instant, task_in_flight),
                     abort_registration,
                 )
                 .await
@@ -136,10 +123,9 @@ fn log_in_flight(in_flight: &Rc<Cell<usize>>) {
 }
 
 async fn send_traffic(
-    arrival_distribution: Exp<f64>,
+    traffic_slots: Vec<u16>,
     start_instant: Instant,
     end_instant: Instant,
-    mut random: SmallRng,
     in_flight: Rc<Cell<usize>>,
 ) -> miette::Result<()> {
     if end_instant < start_instant {
@@ -149,10 +135,7 @@ async fn send_traffic(
     }
 
     let mut arrival_timer = compio::time::interval_at(start_instant, ARRIVAL_TIMER_PERIOD);
-    let first_delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
-    let mut next_arrival = start_instant
-        .checked_add(first_delay)
-        .unwrap_or(end_instant);
+    let mut next_slot = 0;
 
     loop {
         arrival_timer.tick().await;
@@ -161,21 +144,19 @@ async fn send_traffic(
             break;
         }
 
-        while next_arrival <= now {
-            if next_arrival >= end_instant {
-                return Ok(());
+        let current_slot = (now.duration_since(start_instant).as_nanos()
+            / ARRIVAL_TIMER_PERIOD.as_nanos()) as usize;
+        while next_slot <= current_slot && next_slot < traffic_slots.len() {
+            for _ in 0..traffic_slots[next_slot] {
+                in_flight.set(in_flight.get() + 1);
+                let task_in_flight = Rc::clone(&in_flight);
+                compio::runtime::spawn(async move {
+                    std::hint::black_box(());
+                    task_in_flight.set(task_in_flight.get() - 1);
+                })
+                .detach();
             }
-
-            in_flight.set(in_flight.get() + 1);
-            let task_in_flight = Rc::clone(&in_flight);
-            compio::runtime::spawn(async move {
-                std::hint::black_box(());
-                task_in_flight.set(task_in_flight.get() - 1);
-            })
-            .detach();
-
-            let delay = Duration::from_secs_f64(arrival_distribution.sample(&mut random));
-            next_arrival = next_arrival.checked_add(delay).unwrap_or(end_instant);
+            next_slot += 1;
         }
     }
 
@@ -185,7 +166,7 @@ async fn send_traffic(
 #[derive(Debug)]
 pub enum WorkerCommand {
     SendTraffic {
-        arrival_distribution: Exp<f64>,
+        traffic_slots: Vec<u16>,
         start_instant: Instant,
         end_instant: Instant,
     },

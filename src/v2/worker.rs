@@ -64,12 +64,14 @@ impl Worker {
                             log_metrics(&metrics);
                             return Ok(());
                         };
-                        if let Some(new_active_traffic) = handle_request_and_log_error(
+                        match handle_request_and_log_error(
                             request,
                             active_traffic.as_ref(),
                             &metrics,
-                        )? {
-                            active_traffic = Some(new_active_traffic);
+                        ) {
+                            Ok(Some(new_active_traffic)) => active_traffic = Some(new_active_traffic),
+                            Ok(None) => {}
+                            Err(error) => log_request_error(&error),
                         }
                     }
                     _ = interval.tick().fuse() => {
@@ -88,12 +90,14 @@ impl Worker {
                             log_metrics(&metrics);
                             return Ok(());
                         };
-                        if let Some(new_active_traffic) = handle_request_and_log_error(
+                        match handle_request_and_log_error(
                             request,
                             active_traffic.as_ref(),
                             &metrics,
-                        )? {
-                            active_traffic = Some(new_active_traffic);
+                        ) {
+                            Ok(Some(new_active_traffic)) => active_traffic = Some(new_active_traffic),
+                            Ok(None) => {}
+                            Err(error) => log_request_error(&error),
                         }
                         None
                     }
@@ -110,7 +114,9 @@ impl Worker {
                     let result = task_result
                         .map_err(|error| miette::miette!("traffic task failed: {error}"))
                         .and_then(|result| result);
-                    send_response(active_traffic.response, result)?;
+                    if let Err(error) = send_response(active_traffic.response, result) {
+                        log_request_error(&error);
+                    }
                 }
             }
         }
@@ -127,6 +133,10 @@ fn handle_request_and_log_error(
         log_metrics(metrics);
     }
     result
+}
+
+fn log_request_error(error: &miette::Report) {
+    eprintln!("worker request failed: {error}");
 }
 
 fn handle_request(

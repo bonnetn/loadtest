@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use futures::future::try_join_all;
+use futures::future::{join_all, try_join_all};
 use rand::{SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution as _, Poisson};
 
@@ -84,12 +84,12 @@ impl Controller {
     }
 
     pub async fn cancel_workers(&self) -> miette::Result<()> {
-        try_join_all(
+        let results = join_all(
             self.handles
                 .iter()
                 .map(|handle| handle.send(WorkerCommand::Cancel)),
         )
-        .await
-        .map(|_| ())
+        .await;
+        results.into_iter().try_for_each(|result| result)
     }
 }

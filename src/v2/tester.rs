@@ -87,6 +87,12 @@ impl Tester {
     }
 }
 
+impl Default for Tester {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn pin_current_thread(core: usize) {
     #[cfg(target_os = "linux")]
     {

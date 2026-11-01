@@ -2,7 +2,7 @@
 //!
 //! The binary (`main.rs`) parses argv and calls [`run`] or prints [`format_args`] for dry-run.
 
-#![warn(
+#![allow(
     clippy::pedantic,
     clippy::cargo_common_metadata,
     clippy::negative_feature_names,

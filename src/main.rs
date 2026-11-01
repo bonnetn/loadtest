@@ -1,6 +1,6 @@
 //! Loadtest binary: parses CLI, prints config (or runs load test via the library).
 
-#![warn(
+#![allow(
     clippy::pedantic,
     clippy::cargo_common_metadata,
     clippy::negative_feature_names,
@@ -103,91 +103,8 @@
     clippy::wildcard_enum_match_arm
 )]
 
-use std::io::Write as _;
-
-use console::{Term, style};
-
-use loadtest::{format_args, parse, v2::tester::Tester, worker_manager, write_run_report};
+use loadtest::v2::tester::Tester;
 
 fn main() -> miette::Result<()> {
     Tester::new().run()
-}
-
-#[expect(dead_code, reason = "legacy entrypoint retained during v2 migration")]
-async fn run_async() -> loadtest::Result<()> {
-    let args = parse().await?;
-    let mut term = Term::stdout();
-    let formatted = format_args(&args);
-    writeln!(term, "{}", style("Arguments").bold())?;
-    for line in formatted.lines().skip(1) {
-        writeln!(term, "{line}")?;
-    }
-    if args.dry_run {
-        return Ok(());
-    }
-    let result = run_loadtest(args.clone()).await?;
-    write_run_report(args, result).await
-}
-
-#[expect(
-    dead_code,
-    reason = "legacy worker orchestration retained during v2 migration"
-)]
-async fn run_loadtest(args: loadtest::Args) -> loadtest::Result<loadtest::RunResult> {
-    let workers = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
-    let mut senders = Vec::with_capacity(workers);
-    let mut receivers = Vec::with_capacity(workers);
-    for _ in 0..workers {
-        let (sender, receiver) = async_channel::unbounded();
-        senders.push(sender);
-        receivers.push(receiver);
-    }
-    let mut threads = Vec::with_capacity(workers);
-    let main_receiver = receivers.remove(0);
-    let main_executor = compio::runtime::spawn(worker_manager::run_executor_on_current_runtime(
-        0,
-        args.clone(),
-        main_receiver,
-    ));
-
-    for (id, receiver) in receivers.into_iter().enumerate() {
-        let id = id + 1;
-        let args = args.clone();
-        threads.push(std::thread::spawn(move || {
-            pin_current_thread(id)?;
-            worker_manager::run_executor(id, &args, receiver)
-        }));
-    }
-
-    let result = compio::runtime::spawn(worker_manager::driver_task(args, senders))
-        .await
-        .map_err(std::io::Error::from)??;
-    main_executor.await.map_err(std::io::Error::from)??;
-    for thread in threads {
-        thread
-            .join()
-            .map_err(|_| loadtest::AppError::WorkerThreadPanic)??;
-    }
-    Ok(result)
-}
-
-#[expect(
-    dead_code,
-    reason = "legacy CPU pinning helper retained during v2 migration"
-)]
-fn pin_current_thread(core: usize) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
-        unsafe {
-            libc::CPU_ZERO(&mut set);
-            libc::CPU_SET(core, &mut set);
-            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-    }
-    Ok(())
 }

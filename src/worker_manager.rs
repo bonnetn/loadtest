@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    rc::Rc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -35,7 +35,7 @@ pub fn run_executor(id: usize, args: &Args, receiver: Receiver<Order>) -> Result
     let root = runtime.spawn(executor_task(
         id,
         receiver,
-        Arc::new(RequestWorkUnit::new(args)?),
+        Rc::new(RequestWorkUnit::new(args)?),
     ));
     runtime
         .block_on(root)
@@ -48,23 +48,23 @@ pub async fn run_executor_on_current_runtime(
     args: Args,
     receiver: Receiver<Order>,
 ) -> Result<()> {
-    executor_task(id, receiver, Arc::new(RequestWorkUnit::new(&args)?)).await;
+    executor_task(id, receiver, Rc::new(RequestWorkUnit::new(&args)?)).await;
     Ok(())
 }
 
-async fn executor_task(id: usize, receiver: Receiver<Order>, work_unit: Arc<RequestWorkUnit>) {
+async fn executor_task(id: usize, receiver: Receiver<Order>, work_unit: Rc<RequestWorkUnit>) {
     let mut requests = FuturesUnordered::new();
     loop {
         if requests.is_empty() {
             let Ok(order) = receiver.recv().await else {
                 break;
             };
-            requests.push(spawn_request(id, order, Arc::clone(&work_unit)));
+            requests.push(spawn_request(id, order, Rc::clone(&work_unit)));
         } else {
             futures::select! {
                 order = receiver.recv().fuse() => {
                     let Ok(order) = order else { break };
-                    requests.push(spawn_request(id, order, Arc::clone(&work_unit)));
+                    requests.push(spawn_request(id, order, Rc::clone(&work_unit)));
                 }
                 _ = requests.next().fuse() => {}
             }
@@ -73,7 +73,7 @@ async fn executor_task(id: usize, receiver: Receiver<Order>, work_unit: Arc<Requ
     while requests.next().await.is_some() {}
 }
 
-async fn spawn_request(_id: usize, order: Order, work_unit: Arc<RequestWorkUnit>) {
+async fn spawn_request(_id: usize, order: Order, work_unit: Rc<RequestWorkUnit>) {
     let task = compio::runtime::spawn(async move {
         let _ = order.response.send(work_unit.execute().await);
     });

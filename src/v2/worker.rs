@@ -351,7 +351,7 @@ async fn send_traffic(
         let current_slot = (now.duration_since(start_instant).as_nanos()
             / ARRIVAL_TIMER_PERIOD.as_nanos()) as usize;
         metrics.timer_ticks.set(metrics.timer_ticks.get() + 1);
-        if metrics.timer_ticks.get() % 100 == 0 {
+        if metrics.timer_ticks.get().is_multiple_of(100) {
             let lateness_us = Instant::now().saturating_duration_since(now).as_micros() as u64;
             metrics
                 .timer_lateness_samples

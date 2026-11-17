@@ -20,7 +20,7 @@ url = "2"
 miette = { version = "7.6.0", features = ["fancy", "derive"] }
 thiserror = "2"
 tokio = { version = "1.49.0", features = ["full"] }
-tokio-util = "0.7.18"
+tokio-util = "0.7.20"
 futures = "0.3.34"
 reqwest = { version = "0.13.5", features = ["http2", "default-tls", "stream", "rustls"] }
 chrono = "0.4.45"

@@ -212,7 +212,9 @@ async fn args_from_cli(cli: Cli) -> Result<Args> {
         max_time: cli.max_time_secs.map(Duration::from_secs),
         connect_timeout: cli.connect_timeout_secs.map(Duration::from_secs_f64),
         output: cli.output.unwrap_or_else(|| {
-            let ts = time::OffsetDateTime::now_utc()\n                .format(time::macros::format_description!("[year][month][day]T[hour][minute][second]"))\n                .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
+            let ts = time::OffsetDateTime::now_utc()
+                .format(time::macros::format_description!("[year][month][day]T[hour][minute][second]"))
+                .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
             PathBuf::from(format!("loadtest-report-{ts}.pb"))
         }),
         protocol,

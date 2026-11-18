@@ -197,6 +197,15 @@ async fn args_from_cli(cli: Cli) -> Result<Args> {
     let request = resolve_request(&cli, payload.as_ref(), upload_file_path.as_ref());
     let identity = resolve_identity(&cli).await?;
     let root_certificates = resolve_root_certificates(&cli).await?;
+    let output = match cli.output {
+        Some(output) => output,
+        None => {
+            let ts = time::OffsetDateTime::now_utc()
+                .format(time::macros::format_description!("[year][month][day]T[hour][minute][second]"))
+                .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
+            PathBuf::from(format!("loadtest-report-{ts}.pb"))
+        }
+    };
 
     Ok(Args {
         url,
@@ -211,12 +220,7 @@ async fn args_from_cli(cli: Cli) -> Result<Args> {
         duration: Duration::from_secs(cli.duration_secs),
         max_time: cli.max_time_secs.map(Duration::from_secs),
         connect_timeout: cli.connect_timeout_secs.map(Duration::from_secs_f64),
-        output: cli.output.unwrap_or_else(|| {
-            let ts = time::OffsetDateTime::now_utc()
-                .format(time::macros::format_description!("[year][month][day]T[hour][minute][second]"))
-                .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
-            PathBuf::from(format!("loadtest-report-{ts}.pb"))
-        }),
+        output,
         protocol,
         payload,
         identity,

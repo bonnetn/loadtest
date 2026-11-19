@@ -201,7 +201,9 @@ async fn args_from_cli(cli: Cli) -> Result<Args> {
         Some(output) => output,
         None => {
             let ts = time::OffsetDateTime::now_utc()
-                .format(time::macros::format_description!("[year][month][day]T[hour][minute][second]"))
+                .format(time::macros::format_description!(
+                    "[year][month][day]T[hour][minute][second]"
+                ))
                 .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
             PathBuf::from(format!("loadtest-report-{ts}.pb"))
         }

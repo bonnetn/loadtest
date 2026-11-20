@@ -197,16 +197,15 @@ async fn args_from_cli(cli: Cli) -> Result<Args> {
     let request = resolve_request(&cli, payload.as_ref(), upload_file_path.as_ref());
     let identity = resolve_identity(&cli).await?;
     let root_certificates = resolve_root_certificates(&cli).await?;
-    let output = match cli.output {
-        Some(output) => output,
-        None => {
-            let ts = time::OffsetDateTime::now_utc()
-                .format(time::macros::format_description!(
-                    "[year][month][day]T[hour][minute][second]"
-                ))
-                .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
-            PathBuf::from(format!("loadtest-report-{ts}.pb"))
-        }
+    let output = if let Some(output) = cli.output {
+        output
+    } else {
+        let ts = time::OffsetDateTime::now_utc()
+            .format(time::macros::format_description!(
+                "[year][month][day]T[hour][minute][second]"
+            ))
+            .map_err(|source| AppError::FailedToFormatOutputTimestamp { source })?;
+        PathBuf::from(format!("loadtest-report-{ts}.pb"))
     };
 
     Ok(Args {

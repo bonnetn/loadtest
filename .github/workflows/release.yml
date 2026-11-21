@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Run CI checks
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: checks
+    name: Release patch version
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Check out tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Create release tag when changes are present
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_tag=$(git tag --list 'v*' --sort=-version:refname | head -n 1)
+          if [ -n "$latest_tag" ] && git diff --quiet "$latest_tag..HEAD" --             src/ Cargo.toml Cargo.lock README.md; then
+            echo "No release-worthy changes found since $latest_tag."
+            exit 0
+          fi
+
+          current_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          IFS=. read -r major minor patch <<<"$current_version"
+          release_version="$major.$minor.$((patch + 1))"
+          release_tag="v$release_version"
+
+          sed -i "0,/^version = \"$current_version\"/s//version = \"$release_version\"/" Cargo.toml
+          cargo check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release $release_tag"
+          git tag "$release_tag"
+          git push origin main "$release_tag"
+
+          echo "tag=$release_tag" >>"$GITHUB_OUTPUT"
+      - name: Start binary release
+        if: steps.release.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: gh workflow run binary-release.yml --ref main --field "tag=$RELEASE_TAG"

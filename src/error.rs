@@ -109,6 +109,10 @@ pub enum AppError {
     #[diagnostic(code(loadtest::failed_to_parse_cacert_pem_file))]
     FailedToParseCacertPemFile { source: reqwest::Error },
 
+    #[error("Failed to format the default output timestamp")]
+    #[diagnostic(code(loadtest::failed_to_format_output_timestamp))]
+    FailedToFormatOutputTimestamp { source: time::error::Format },
+
     /// Invalid or missing CLI arguments.
     #[error(transparent)]
     #[diagnostic(code(loadtest::clap))]
